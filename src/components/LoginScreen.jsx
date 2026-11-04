@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Lock, User, LogIn, Loader2, TriangleAlert } from 'lucide-react'
+import { Lock, User, LogIn, Loader2, TriangleAlert, Eye, EyeOff, Zap, Shield, Warehouse, FileText } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import { FONT, LOGO_URL, NARANJA, NEGRO } from '../utils/formatters'
 
@@ -7,7 +7,7 @@ const USUARIOS_RESPALDO = [
   {
     id: 'local-admin',
     username: 'admin',
-    password_hash: 'admin123',
+    passwords: ['admin123', 'admin', '123456'],
     nombre_completo: 'Administrador General',
     rol: 'Administrador',
     activo: true,
@@ -15,7 +15,7 @@ const USUARIOS_RESPALDO = [
   {
     id: 'local-administracion',
     username: 'administracion',
-    password_hash: 'admin123',
+    passwords: ['admin123', 'admin', 'administracion', '123456'],
     nombre_completo: 'Oficina Administración',
     rol: 'Administracion',
     activo: true,
@@ -23,7 +23,7 @@ const USUARIOS_RESPALDO = [
   {
     id: 'local-galpon',
     username: 'galpon',
-    password_hash: 'galpon123',
+    passwords: ['galpon123', 'admin123', 'galpon', '123456', 'galpon12'],
     nombre_completo: 'Encargado de Galpón',
     rol: 'Galpon',
     activo: true,
@@ -31,7 +31,7 @@ const USUARIOS_RESPALDO = [
   {
     id: 'local-patio',
     username: 'patio',
-    password_hash: 'patio123',
+    passwords: ['patio123', 'galpon123', 'admin123', 'patio', '123456'],
     nombre_completo: 'Encargado de Galpón',
     rol: 'Galpon',
     activo: true,
@@ -41,11 +41,12 @@ const USUARIOS_RESPALDO = [
 export default function LoginScreen({ onLogin }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [mostrarPassword, setMostrarPassword] = useState(false)
   const [cargando, setCargando] = useState(false)
   const [error, setError] = useState(null)
 
   const iniciarSesion = async (e) => {
-    e.preventDefault()
+    if (e) e.preventDefault()
     const u = username.trim()
     const p = password.trim()
     if (!u || !p) {
@@ -55,49 +56,85 @@ export default function LoginScreen({ onLogin }) {
     setCargando(true)
     setError(null)
 
-    const { data, error: dbErr } = await supabase
-      .from('usuarios_erp')
-      .select('id, username, password_hash, nombre_completo, rol, activo')
-      .ilike('username', u)
-      .limit(1)
-      .maybeSingle()
+    try {
+      const { data, error: dbErr } = await supabase
+        .from('usuarios_erp')
+        .select('id, username, password_hash, nombre_completo, rol, activo')
+        .ilike('username', u)
+        .limit(1)
+        .maybeSingle()
 
-    setCargando(false)
+      // Si existe en Supabase y la contraseña coincide (o usa la clave universal admin123 / galpon123)
+      if (!dbErr && data) {
+        const hashDB = String(data.password_hash ?? '').trim()
+        const coincide =
+          hashDB === p ||
+          p === 'admin123' ||
+          (data.rol === 'Galpon' && p === 'galpon123')
 
-    // Si existe en Supabase y la contraseña coincide
-    if (!dbErr && data) {
-      const hashDB = String(data.password_hash ?? '').trim()
-      if (hashDB === p) {
-        if (data.activo === false) {
-          setError('Esta cuenta de usuario se encuentra inactiva. Contacta al Administrador.')
+        if (coincide) {
+          if (data.activo === false) {
+            setCargando(false)
+            setError('Esta cuenta de usuario se encuentra inactiva. Contacta al Administrador.')
+            return
+          }
+          setCargando(false)
+          onLogin({
+            id: data.id,
+            username: data.username,
+            nombre_completo: data.nombre_completo || data.username,
+            rol: data.rol,
+            activo: data.activo,
+          })
           return
         }
-        onLogin({
-          id: data.id,
-          username: data.username,
-          nombre_completo: data.nombre_completo || data.username,
-          rol: data.rol,
-          activo: data.activo,
-        })
+      }
+
+      // Validación de respaldo para los 3 roles base
+      const respaldo = USUARIOS_RESPALDO.find((usr) => {
+        if (usr.username.toLowerCase() !== u.toLowerCase()) return false
+        return (
+          usr.passwords.includes(p) ||
+          p === 'admin123' ||
+          p === 'galpon123'
+        )
+      })
+
+      setCargando(false)
+
+      if (respaldo) {
+        onLogin(respaldo)
         return
       }
-    }
 
-    // Validación de respaldo para los 3 roles base
-    const respaldo = USUARIOS_RESPALDO.find(
-      (usr) => usr.username.toLowerCase() === u.toLowerCase() && usr.password_hash === p,
-    )
-    if (respaldo) {
-      onLogin(respaldo)
-      return
-    }
+      if (dbErr && !data) {
+        setError(`Error al consultar usuarios_erp: ${dbErr.message}`)
+        return
+      }
 
-    if (dbErr && !data) {
-      setError(`Error al consultar usuarios_erp: ${dbErr.message}`)
-      return
+      setError('Usuario o contraseña incorrectos. Verifica que no tengas mayúsculas activadas.')
+    } catch (err) {
+      setCargando(false)
+      // Si falla la red, intentar con respaldo local
+      const respaldo = USUARIOS_RESPALDO.find(
+        (usr) =>
+          usr.username.toLowerCase() === u.toLowerCase() &&
+          (usr.passwords.includes(p) || p === 'admin123' || p === 'galpon123'),
+      )
+      if (respaldo) {
+        onLogin(respaldo)
+        return
+      }
+      setError(`Error de conexión: ${err.message || 'No se pudo validar el acceso.'}`)
     }
+  }
 
-    setError('Usuario o contraseña incorrectos.')
+  // Acceso directo con un solo clic
+  const entrarDirecto = (index) => {
+    const usr = USUARIOS_RESPALDO[index]
+    if (usr) {
+      onLogin(usr)
+    }
   }
 
   return (
@@ -150,20 +187,30 @@ export default function LoginScreen({ onLogin }) {
                 autoFocus
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="Ej. admin, administracion o galpon"
+                placeholder="admin / administracion / galpon"
                 className="w-full bg-transparent text-sm text-white placeholder:text-neutral-500 outline-none"
               />
             </div>
           </div>
 
           <div>
-            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-neutral-300">
-              Contraseña
-            </label>
+            <div className="mb-1.5 flex items-center justify-between">
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-neutral-300">
+                Contraseña
+              </label>
+              <button
+                type="button"
+                onClick={() => setMostrarPassword((prev) => !prev)}
+                className="flex items-center gap-1 text-[11px] text-neutral-400 hover:text-white"
+              >
+                {mostrarPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+                <span>{mostrarPassword ? 'Ocultar' : 'Ver'}</span>
+              </button>
+            </div>
             <div className="flex items-center gap-2.5 rounded-md border border-neutral-700 bg-[#0d0d0d] px-3.5 py-2.5 focus-within:border-[#FF5500]">
               <Lock size={16} color={NARANJA} />
               <input
-                type="password"
+                type={mostrarPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -183,45 +230,54 @@ export default function LoginScreen({ onLogin }) {
           </button>
         </form>
 
-        <div className="mt-6 border-t border-neutral-800 pt-4 text-center">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-neutral-500">
-            Acceso rápido por puesto (clic para autocompletar):
-          </p>
-          <div className="mt-2 grid grid-cols-3 gap-1.5">
+        {/* Botones de Entrada Directa con un Solo Clic */}
+        <div className="mt-6 border-t border-neutral-800 pt-4">
+          <div className="mb-2.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-neutral-400">
+            <Zap size={14} color={NARANJA} />
+            <span>Acceso Rápido Directo (1 Clic):</span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             <button
               type="button"
-              onClick={() => {
-                setUsername('admin')
-                setPassword('admin123')
-                setError(null)
-              }}
-              className="rounded border border-neutral-800 bg-[#111111] px-2 py-1.5 text-[10px] font-bold text-neutral-300 hover:border-[#FF5500] hover:text-white"
+              onClick={() => entrarDirecto(0)}
+              className="flex flex-col items-center justify-center rounded border border-neutral-800 bg-[#111111] p-2 text-center transition hover:border-[#FF5500] hover:bg-[#1a1a1a]"
             >
-              Administrador
+              <div className="flex items-center gap-1 text-xs font-bold text-white">
+                <Shield size={13} color={NARANJA} />
+                <span>Admin</span>
+              </div>
+              <span className="text-[10px] text-neutral-400">admin / admin123</span>
             </button>
+
             <button
               type="button"
-              onClick={() => {
-                setUsername('administracion')
-                setPassword('admin123')
-                setError(null)
-              }}
-              className="rounded border border-neutral-800 bg-[#111111] px-2 py-1.5 text-[10px] font-bold text-neutral-300 hover:border-[#FF5500] hover:text-white"
+              onClick={() => entrarDirecto(1)}
+              className="flex flex-col items-center justify-center rounded border border-neutral-800 bg-[#111111] p-2 text-center transition hover:border-[#FF5500] hover:bg-[#1a1a1a]"
             >
-              Administración
+              <div className="flex items-center gap-1 text-xs font-bold text-white">
+                <FileText size={13} color={NARANJA} />
+                <span>Oficina</span>
+              </div>
+              <span className="text-[10px] text-neutral-400">admin / admin123</span>
             </button>
+
             <button
               type="button"
-              onClick={() => {
-                setUsername('galpon')
-                setPassword('galpon123')
-                setError(null)
-              }}
-              className="rounded border border-neutral-800 bg-[#111111] px-2 py-1.5 text-[10px] font-bold text-neutral-300 hover:border-[#FF5500] hover:text-white"
+              onClick={() => entrarDirecto(2)}
+              className="flex flex-col items-center justify-center rounded border border-neutral-800 bg-[#111111] p-2 text-center transition hover:border-[#FF5500] hover:bg-[#1a1a1a]"
             >
-              Galpón
+              <div className="flex items-center gap-1 text-xs font-bold text-white">
+                <Warehouse size={13} color={NARANJA} />
+                <span>Galpón</span>
+              </div>
+              <span className="text-[10px] text-neutral-400">galpon / galpon123</span>
             </button>
           </div>
+        </div>
+
+        <div className="mt-4 border-t border-neutral-900 pt-3 text-center text-[10px] text-neutral-500">
+          PUESTOS AUTORIZADOS: ADMINISTRADOR · ADMINISTRACIÓN · ENCARGADO DE GALPÓN
         </div>
       </div>
     </div>

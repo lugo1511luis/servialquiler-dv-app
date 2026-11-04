@@ -203,6 +203,17 @@ export const diasEntreHoyY = (fechaFin) => {
   return Math.round((fin.getTime() - hoy.getTime()) / (1000 * 60 * 60 * 24))
 }
 
+export const diasEntreFechas = (fechaInicio, fechaFin) => {
+  if (!fechaInicio || !fechaFin) return 1
+  const strIni = String(fechaInicio).slice(0, 10)
+  const strFin = String(fechaFin).slice(0, 10)
+  const dIni = new Date(strIni + 'T00:00:00')
+  const dFin = new Date(strFin + 'T00:00:00')
+  if (Number.isNaN(dIni.getTime()) || Number.isNaN(dFin.getTime())) return 1
+  const diff = Math.round((dFin.getTime() - dIni.getTime()) / (1000 * 60 * 60 * 24))
+  return Math.max(1, diff)
+}
+
 export const esDeHoy = (fechaValor) => {
   if (!fechaValor) return false
   const hoy = hoyISO()

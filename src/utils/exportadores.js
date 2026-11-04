@@ -328,12 +328,18 @@ export const generarFacturaContratoPDF = async ({ contrato, cliente, items, tasa
     const precioDia = num(
       it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
     )
-    const diasItem = dias
-    const subtotal = cant * precioDia * diasItem
+    const esDevuelto = Boolean(it.devuelto)
+    const diasItem = esDevuelto ? num(it.dias_efectivos) || dias : dias
+    const subtotal = esDevuelto
+      ? num(it.subtotal_item_usd) || (cant * precioDia * diasItem)
+      : (cant * precioDia * diasItem)
+    const nombreEquipo = esDevuelto
+      ? `${it.material ?? it.nombre ?? 'Equipo'} [DEVUELTO EL ${fmtFecha(it.fecha_devolucion)} · ${diasItem}d]`
+      : (it.material ?? it.nombre ?? 'Equipo')
     return [
       idx + 1,
       it.codigo ?? '—',
-      it.material ?? it.nombre ?? 'Equipo',
+      nombreEquipo,
       fmtNum(cant),
       `${diasItem} d`,
       fmtUSD(precioDia),

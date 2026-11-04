@@ -16,9 +16,11 @@ import {
   ShieldAlert,
   CheckCircle2,
   Banknote,
+  PackageCheck,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import {
+  diasEntreFechas,
   diasEntreHoyY,
   fmtFecha,
   fmtNum,
@@ -167,6 +169,20 @@ export default function AlquileresModule({
   const [metodoPagoAbono, setMetodoPagoAbono] = useState(
     () => metodosPago[0] || 'Efectivo USD',
   )
+  const [pagoMixtoAbono, setPagoMixtoAbono] = useState(false)
+  const [metodoPagoAbono1, setMetodoPagoAbono1] = useState(
+    () => metodosPago[0] || 'Efectivo USD',
+  )
+  const [montoMetodoAbono1Usd, setMontoMetodoAbono1Usd] = useState('')
+  const [metodoPagoAbono2, setMetodoPagoAbono2] = useState(
+    () => metodosPago[1] || 'Pago Móvil / Transferencia Bs.',
+  )
+  const [montoMetodoAbono2Usd, setMontoMetodoAbono2Usd] = useState('')
+
+  // Modal Devolución Parcial
+  const [modalDevolucionParcial, setModalDevolucionParcial] = useState(null)
+  const [devolucionCantidades, setDevolucionCantidades] = useState({})
+  const [fechaDevolucionParcial, setFechaDevolucionParcial] = useState(() => hoyISO())
 
   const [procesando, setProcesando] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
@@ -182,6 +198,13 @@ export default function AlquileresModule({
   const [depositoGarantiaUsd, setDepositoGarantiaUsd] = useState('')
   const [montoAbonadoHoyUsd, setMontoAbonadoHoyUsd] = useState('')
   const [metodoPago, setMetodoPago] = useState(() => metodosPago[0] || 'Efectivo USD')
+  const [pagoMixto, setPagoMixto] = useState(false)
+  const [metodoPago1, setMetodoPago1] = useState(() => metodosPago[0] || 'Efectivo USD')
+  const [montoMetodo1Usd, setMontoMetodo1Usd] = useState('')
+  const [metodoPago2, setMetodoPago2] = useState(
+    () => metodosPago[1] || 'Pago Móvil / Transferencia Bs.',
+  )
+  const [montoMetodo2Usd, setMontoMetodo2Usd] = useState('')
   const [lineas, setLineas] = useState([])
 
   // Creación rápida de cliente
@@ -414,11 +437,38 @@ export default function AlquileresModule({
       return
     }
 
+    if (pagoMixto && abonoHoyNum > 0) {
+      const m1 = num(montoMetodo1Usd)
+      const m2 = num(montoMetodo2Usd)
+      if (Math.abs(m1 + m2 - abonoHoyNum) > 0.01) {
+        setErrorMsg(
+          `La suma de los métodos de pago mixtos ($${m1.toFixed(2)} + $${m2.toFixed(2)} = $${(m1 + m2).toFixed(2)}) debe ser exactamente igual al monto abonado hoy ($${abonoHoyNum.toFixed(2)}).`,
+        )
+        return
+      }
+    }
+
     setProcesando(true)
     setErrorMsg(null)
 
     const cli = mapaClientes.get(String(clienteId))
     const codigoGenerado = `CT-${String(alquileres.length + 1).padStart(4, '0')}`
+
+    const metodoFinal =
+      pagoMixto && abonoHoyNum > 0
+        ? `Mixto: ${metodoPago1} ($${num(montoMetodo1Usd).toFixed(2)}) + ${metodoPago2} ($${num(montoMetodo2Usd).toFixed(2)})`
+        : metodoPago
+
+    const desgloseFinal =
+      pagoMixto && abonoHoyNum > 0
+        ? {
+            mixto: true,
+            metodo1: metodoPago1,
+            monto1_usd: num(montoMetodo1Usd),
+            metodo2: metodoPago2,
+            monto2_usd: num(montoMetodo2Usd),
+          }
+        : null
 
     const payload = {
       codigo_contrato: codigoGenerado,
@@ -438,7 +488,8 @@ export default function AlquileresModule({
       saldo_pendiente_usd: restantePorCobrarHoyUSD,
       estado_pago: estadoPagoHoy,
       tasa_aplicada_bcv: num(tasa),
-      metodo_pago: metodoPago,
+      metodo_pago: metodoFinal,
+      desglose_pago: desgloseFinal,
       prorrogas_aplicadas: 0,
       estado: 'Activo',
       estado_despacho: 'Pendiente por Cargar',
@@ -520,6 +571,9 @@ export default function AlquileresModule({
     setCostoFleteUsd('')
     setDepositoGarantiaUsd('')
     setMontoAbonadoHoyUsd('')
+    setPagoMixto(false)
+    setMontoMetodo1Usd('')
+    setMontoMetodo2Usd('')
     setAvisoAliado(null)
     onRecargarTodo()
   }
@@ -548,6 +602,29 @@ export default function AlquileresModule({
 
     const datosPago = obtenerDatosPagoContrato(modalAbono)
     const abonoEfectivo = Math.min(datosPago.restante, Number(abono.toFixed(2)))
+
+    let metodoFinal = metodoPagoAbono || modalAbono.metodo_pago
+    let desgloseFinal = null
+
+    if (pagoMixtoAbono) {
+      const m1 = num(montoMetodoAbono1Usd)
+      const m2 = num(montoMetodoAbono2Usd)
+      if (Math.abs(m1 + m2 - abonoEfectivo) > 0.01) {
+        setErrorMsg(
+          `La suma de los métodos mixtos ($${m1.toFixed(2)} + $${m2.toFixed(2)} = $${(m1 + m2).toFixed(2)}) debe coincidir exactamente con el abono ($${abonoEfectivo.toFixed(2)}).`,
+        )
+        return
+      }
+      metodoFinal = `Mixto: ${metodoPagoAbono1} ($${m1.toFixed(2)}) + ${metodoPagoAbono2} ($${m2.toFixed(2)})`
+      desgloseFinal = {
+        mixto: true,
+        metodo1: metodoPagoAbono1,
+        monto1_usd: m1,
+        metodo2: metodoPagoAbono2,
+        monto2_usd: m2,
+      }
+    }
+
     const nuevoPagado = Number((datosPago.pagado + abonoEfectivo).toFixed(2))
     const nuevoRestante = Math.max(0, Number((datosPago.total - nuevoPagado).toFixed(2)))
     const nuevoEstadoPago = calcularEstadoPago(nuevoPagado, nuevoRestante)
@@ -559,7 +636,8 @@ export default function AlquileresModule({
       monto_pagado_usd: nuevoPagado,
       saldo_pendiente_usd: nuevoRestante,
       estado_pago: nuevoEstadoPago,
-      metodo_pago: metodoPagoAbono || modalAbono.metodo_pago,
+      metodo_pago: metodoFinal,
+      desglose_pago: desgloseFinal,
     })
 
     if (error) {
@@ -735,6 +813,221 @@ export default function AlquileresModule({
       estado_despacho: 'Devuelto a Galpón',
     })
     setProcesando(false)
+    onRecargarTodo()
+  }
+
+  // ---- Devolución Parcial de Equipos de Obra --------------------------------
+  const abrirDevolucionParcial = (c) => {
+    setModalDevolucionParcial(c)
+    setFechaDevolucionParcial(hoyISO())
+    const items = obtenerItemsConRespaldo(c)
+    const initCant = {}
+    items.forEach((it, idx) => {
+      const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
+      initCant[idKey] = ''
+    })
+    setDevolucionCantidades(initCant)
+    setErrorMsg(null)
+  }
+
+  const confirmarDevolucionParcial = async (e) => {
+    e.preventDefault()
+    if (!modalDevolucionParcial) return
+
+    const contrato = modalDevolucionParcial
+    const items = obtenerItemsConRespaldo(contrato)
+    const fechaDev = fechaDevolucionParcial || hoyISO()
+    const diasUso = diasEntreFechas(contrato.fecha_inicio, fechaDev)
+
+    // Validar cantidades a devolver
+    let totalDevolviendo = 0
+    for (let idx = 0; idx < items.length; idx++) {
+      const it = items[idx]
+      if (it.devuelto) continue
+      const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
+      const cantADevolver = Number(devolucionCantidades[idKey] || 0)
+      const cantActiva = Number(it.cantidad || 0)
+      if (cantADevolver > cantActiva) {
+        setErrorMsg(
+          `No puedes devolver más unidades (${cantADevolver}) de las que están en obra (${cantActiva}) para ${it.material}.`,
+        )
+        return
+      }
+      totalDevolviendo += cantADevolver
+    }
+
+    if (totalDevolviendo <= 0) {
+      setErrorMsg('Indica la cantidad a devolver de al menos un equipo.')
+      return
+    }
+
+    setProcesando(true)
+    setErrorMsg(null)
+
+    const cli = mapaClientes.get(String(contrato.cliente_id))
+    const nombreCliente =
+      contrato.cliente_nombre || cli?.nombre_razon_social || 'Cliente de Obra'
+    const refContrato =
+      contrato.codigo_contrato ||
+      contrato.numero_contrato ||
+      `CT-${String(contrato.id ?? '').padStart(4, '0')}`
+
+    const nuevosItems = []
+    let todasDevueltas = true
+
+    for (let idx = 0; idx < items.length; idx++) {
+      const it = items[idx]
+      const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
+      const cantADevolver = Number(devolucionCantidades[idKey] || 0)
+      const cantActual = Number(it.cantidad || 0)
+      const precioDia = num(
+        it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
+      )
+
+      if (it.devuelto) {
+        nuevosItems.push(it)
+        continue
+      }
+
+      if (cantADevolver <= 0) {
+        nuevosItems.push(it)
+        todasDevueltas = false
+      } else if (cantADevolver === cantActual) {
+        // Se devuelve la totalidad de esta línea
+        const subtotalEfectivo = Number((cantActual * precioDia * diasUso).toFixed(2))
+        nuevosItems.push({
+          ...it,
+          devuelto: true,
+          fecha_devolucion: fechaDev,
+          dias_efectivos: diasUso,
+          subtotal_item_usd: subtotalEfectivo,
+          estado: 'Devuelto Parcial',
+        })
+      } else {
+        // Se devuelve una parte (se divide la línea en devuelta y activa)
+        todasDevueltas = false
+        const cantRestante = cantActual - cantADevolver
+        const subtotalEfectivo = Number((cantADevolver * precioDia * diasUso).toFixed(2))
+
+        // Línea devuelta
+        nuevosItems.push({
+          ...it,
+          cantidad: cantADevolver,
+          devuelto: true,
+          fecha_devolucion: fechaDev,
+          dias_efectivos: diasUso,
+          subtotal_item_usd: subtotalEfectivo,
+          estado: 'Devuelto Parcial',
+        })
+
+        // Línea que sigue en obra
+        nuevosItems.push({
+          ...it,
+          cantidad: cantRestante,
+          devuelto: false,
+        })
+      }
+
+      // Reintegrar stock a inventario y registrar kardex
+      if (cantADevolver > 0) {
+        const eqActual = inventario.find(
+          (i) =>
+            String(i.id) === String(it.inventario_id) ||
+            (it.codigo && i.codigo === it.codigo),
+        )
+        if (eqActual) {
+          const nuevoDisp = num(eqActual.stock_propio_disponible) + cantADevolver
+          const nuevoAlq = Math.max(0, num(eqActual.stock_propio_alquilado) - cantADevolver)
+
+          await supabase
+            .from('inventario')
+            .update({
+              stock_propio_disponible: nuevoDisp,
+              stock_propio_alquilado: nuevoAlq,
+            })
+            .eq('id', eqActual.id)
+
+          await registrarMovimientoKardex({
+            inventario_id: eqActual.id,
+            codigo: eqActual.codigo,
+            material: eqActual.material,
+            tipo_movimiento: 'ENTRADA (Devolución Parcial de Galpón)',
+            cantidad: cantADevolver,
+            stock_resultante: nuevoDisp,
+            referencia_documento: refContrato,
+            cliente_nombre: nombreCliente,
+            observaciones: `Devolución parcial de obra (${cantADevolver} und. recibidas tras ${diasUso} días de uso). Recibido por ${usuarioActual?.nombre_completo || usuarioActual?.username || 'Operador'}`,
+          })
+        }
+      }
+    }
+
+    // Recalcular montos del contrato
+    const flete = contrato.requiere_flete ? num(contrato.costo_flete_usd) : 0
+    const diasContrato = num(contrato.dias_alquiler) || 1
+    const nuevoSubtotalEquipos = nuevosItems.reduce((acc, it) => {
+      const precio = num(
+        it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
+      )
+      if (it.devuelto) {
+        return (
+          acc +
+          (num(it.subtotal_item_usd) ||
+            num(it.cantidad) * precio * (num(it.dias_efectivos) || diasUso))
+        )
+      }
+      return acc + num(it.cantidad) * precio * diasContrato
+    }, 0)
+
+    const nuevoTotalContrato = Number((nuevoSubtotalEquipos + flete).toFixed(2))
+    const totalAnterior = num(contrato.total_contrato_usd)
+    const reduccionTotal = Math.max(0, Number((totalAnterior - nuevoTotalContrato).toFixed(2)))
+
+    const datosPago = obtenerDatosPagoContrato(contrato)
+    const nuevoRestante = Math.max(0, Number((nuevoTotalContrato - datosPago.pagado).toFixed(2)))
+    const nuevoEstadoPago = calcularEstadoPago(datosPago.pagado, nuevoRestante)
+
+    const estadoDespacho = todasDevueltas ? 'Devuelto a Galpón' : 'En Obra (Devolución Parcial)'
+    const estadoGeneral = todasDevueltas ? 'Devuelto a Galpón' : 'Activo'
+
+    const cambiosContrato = {
+      items: nuevosItems,
+      subtotal_equipos_usd: Number(nuevoSubtotalEquipos.toFixed(2)),
+      total_contrato_usd: nuevoTotalContrato,
+      saldo_pendiente_usd: nuevoRestante,
+      estado_pago: nuevoEstadoPago,
+      estado_despacho: estadoDespacho,
+      estado: estadoGeneral,
+    }
+
+    await actualizarContratoSeguro(contrato.id, cambiosContrato)
+
+    guardarAbonoRespaldo(contrato.id, {
+      monto_pagado_usd: datosPago.pagado,
+      saldo_pendiente_usd: nuevoRestante,
+      estado_pago: nuevoEstadoPago,
+    })
+    try {
+      sessionStorage.setItem(`contrato_items_${contrato.id}`, JSON.stringify(nuevosItems))
+    } catch {
+      // Ignorar
+    }
+    setVersionRespaldo((v) => v + 1)
+
+    // Ajustar deuda del cliente en clientes si se redujo el total
+    if (cli && reduccionTotal > 0) {
+      const nuevoSaldoCliente = Math.max(
+        0,
+        Number((num(cli.saldo_pendiente_usd) - reduccionTotal).toFixed(2)),
+      )
+      await supabase
+        .from('clientes')
+        .update({ saldo_pendiente_usd: nuevoSaldoCliente })
+        .eq('id', cli.id)
+    }
+
+    setProcesando(false)
+    setModalDevolucionParcial(null)
     onRecargarTodo()
   }
 
@@ -997,6 +1290,27 @@ export default function AlquileresModule({
                     ))}
                   </select>
 
+                  {/* Semáforo y Alerta de Cliente con Deuda */}
+                  {(() => {
+                    const cliSel = clientes.find((c) => String(c.id) === String(clienteId))
+                    const deuda = num(cliSel?.saldo_pendiente_usd)
+                    if (!cliSel || deuda <= 0.009) return null
+                    return (
+                      <div className="mt-2 flex items-start gap-2.5 rounded-md border-2 border-red-500 bg-red-50 p-3 text-xs text-red-900 shadow-sm">
+                        <TriangleAlert size={18} className="mt-0.5 shrink-0 text-red-600" />
+                        <div>
+                          <p className="font-bold text-red-800">
+                            ⚠️ Atención: Este cliente registra un saldo pendiente actual de USD {fmtUSD(deuda)}
+                            {tasa ? ` (${fmtVES(deuda * tasa)} a la Tasa del Día)` : ''}.
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-red-700">
+                            Tiene cobros atrasados de alquileres previos. Verifica antes de despachar o solicita el abono de su deuda.
+                          </p>
+                        </div>
+                      </div>
+                    )
+                  })()}
+
                   {/* Formulario rápido para cliente nuevo */}
                   {mostrarFormCliente && (
                     <div className="mt-2 space-y-2 rounded border border-neutral-300 bg-neutral-50 p-3">
@@ -1230,21 +1544,166 @@ export default function AlquileresModule({
                     </div>
 
                     <div>
-                      <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-700">
-                        Forma de Pago del Cliente
-                      </label>
-                      <select
-                        value={metodoPago}
-                        onChange={(e) => setMetodoPago(e.target.value)}
-                        className="w-full rounded border border-neutral-300 bg-white px-2.5 py-2 font-bold outline-none focus:border-[#FF5500]"
-                      >
-                        {metodosPago.map((m) => (
-                          <option key={m} value={m}>
-                            {m}
-                          </option>
-                        ))}
-                      </select>
+                      <div className="mb-1 flex items-center justify-between">
+                        <label className="block text-[10px] font-bold uppercase text-neutral-700">
+                          Forma de Pago del Cliente
+                        </label>
+                      </div>
+                      {!pagoMixto ? (
+                        <select
+                          value={metodoPago}
+                          onChange={(e) => setMetodoPago(e.target.value)}
+                          className="w-full rounded border border-neutral-300 bg-white px-2.5 py-2 font-bold outline-none focus:border-[#FF5500]"
+                        >
+                          {metodosPago.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="rounded border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-800">
+                          💳 Pago Mixto (Desglosado abajo)
+                        </div>
+                      )}
                     </div>
+                  </div>
+
+                  {/* Casilla para Habilitar Pago Mixto */}
+                  <div className="mt-2.5 border-t border-neutral-200 pt-2">
+                    <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-neutral-800">
+                      <input
+                        type="checkbox"
+                        checked={pagoMixto}
+                        onChange={(e) => {
+                          const activando = e.target.checked
+                          setPagoMixto(activando)
+                          if (activando && abonoHoyNum > 0) {
+                            const mitad = (abonoHoyNum / 2).toFixed(2)
+                            const resto = (abonoHoyNum - Number(mitad)).toFixed(2)
+                            setMontoMetodo1Usd(mitad)
+                            setMontoMetodo2Usd(resto)
+                          }
+                        }}
+                        className="h-4 w-4 accent-[#FF5500]"
+                      />
+                      <span>💳 Habilitar Pago Mixto (Dividir en dos métodos)</span>
+                    </label>
+
+                    {pagoMixto && (
+                      <div className="mt-2 space-y-2 rounded border border-amber-300 bg-amber-50/70 p-2.5">
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                          <div>
+                            <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                              Método 1
+                            </label>
+                            <select
+                              value={metodoPago1}
+                              onChange={(e) => setMetodoPago1(e.target.value)}
+                              className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-bold outline-none focus:border-[#FF5500]"
+                            >
+                              {metodosPago.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="mt-1 flex items-center gap-1">
+                              <span className="text-[10px] font-bold text-neutral-500">Monto 1 USD:</span>
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                placeholder="0.00"
+                                value={montoMetodo1Usd}
+                                onChange={(e) => {
+                                  const val = limpiarInputDecimal(e.target.value)
+                                  setMontoMetodo1Usd(val)
+                                  if (abonoHoyNum > 0) {
+                                    const restante = Math.max(
+                                      0,
+                                      Number((abonoHoyNum - Number(val || 0)).toFixed(2)),
+                                    )
+                                    setMontoMetodo2Usd(restante > 0 ? String(restante) : '')
+                                  }
+                                }}
+                                className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                              />
+                            </div>
+                            {tasa && Number(montoMetodo1Usd || 0) > 0 && (
+                              <p className="mt-0.5 text-right font-mono text-[10px] text-neutral-500">
+                                ≈ {fmtVES(Number(montoMetodo1Usd) * tasa)} (a la Tasa del Día)
+                              </p>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                              Método 2
+                            </label>
+                            <select
+                              value={metodoPago2}
+                              onChange={(e) => setMetodoPago2(e.target.value)}
+                              className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-bold outline-none focus:border-[#FF5500]"
+                            >
+                              {metodosPago.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                            <div className="mt-1 flex items-center gap-1">
+                              <span className="text-[10px] font-bold text-neutral-500">Monto 2 USD:</span>
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                placeholder="0.00"
+                                value={montoMetodo2Usd}
+                                onChange={(e) =>
+                                  setMontoMetodo2Usd(limpiarInputDecimal(e.target.value))
+                                }
+                                className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                              />
+                            </div>
+                            {tasa && Number(montoMetodo2Usd || 0) > 0 && (
+                              <p className="mt-0.5 text-right font-mono text-[10px] text-neutral-500">
+                                ≈ {fmtVES(Number(montoMetodo2Usd) * tasa)} (a la Tasa del Día)
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Comparación de suma vs total abonado */}
+                        <div className="flex items-center justify-between border-t border-amber-200 pt-1.5 font-mono text-[11px]">
+                          <span>
+                            Suma Mixta:{' '}
+                            <b>
+                              {fmtUSD(
+                                Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0),
+                              )}
+                            </b>
+                          </span>
+                          <span
+                            className={
+                              Math.abs(
+                                Number(montoMetodo1Usd || 0) +
+                                  Number(montoMetodo2Usd || 0) -
+                                  abonoHoyNum,
+                              ) < 0.01
+                                ? 'font-bold text-emerald-700'
+                                : 'font-bold text-red-600'
+                            }
+                          >
+                            {Math.abs(
+                              Number(montoMetodo1Usd || 0) +
+                                Number(montoMetodo2Usd || 0) -
+                                abonoHoyNum,
+                            ) < 0.01
+                              ? '✓ Cuadra con el abono hoy'
+                              : `⚠️ Diferencia: ${fmtUSD(Math.abs(Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0) - abonoHoyNum))}`}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   {/* Desglose en vivo: Abonado Hoy y Restante por Cobrar */}
@@ -1617,10 +2076,20 @@ export default function AlquileresModule({
                               </button>
 
                               <button
+                                onClick={() => abrirDevolucionParcial(c)}
+                                disabled={procesando}
+                                className="flex items-center gap-1 rounded border border-purple-300 bg-purple-50 px-2 py-1 text-[11px] font-bold text-purple-800 hover:bg-purple-100"
+                                title="Registrar devolución parcial de equipos y recalcular cobro por días reales de uso"
+                              >
+                                <PackageCheck size={13} />
+                                <span>📦 Devolución Parcial</span>
+                              </button>
+
+                              <button
                                 onClick={() => finalizarContrato(c)}
                                 disabled={procesando}
                                 className="flex items-center gap-1 rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100"
-                                title="Registra que el cliente ya regresó los equipos al galpón"
+                                title="Registra que el cliente ya regresó todos los equipos al galpón"
                               >
                                 <RotateCcw size={13} />
                                 <span>Devolver a Galpón</span>
@@ -1743,21 +2212,158 @@ export default function AlquileresModule({
                         )}
                       </div>
 
-                      <div>
-                        <label className="mb-1 block font-bold uppercase text-neutral-700">
-                          Método de Pago recibido
+                      {/* Casilla para Habilitar Pago Mixto en Abono */}
+                      <div className="border-t border-neutral-200 pt-2">
+                        <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-neutral-800">
+                          <input
+                            type="checkbox"
+                            checked={pagoMixtoAbono}
+                            onChange={(e) => {
+                              const activando = e.target.checked
+                              setPagoMixtoAbono(activando)
+                              if (activando && abonoNum > 0) {
+                                const mitad = (abonoNum / 2).toFixed(2)
+                                const resto = (abonoNum - Number(mitad)).toFixed(2)
+                                setMontoMetodoAbono1Usd(mitad)
+                                setMontoMetodoAbono2Usd(resto)
+                              }
+                            }}
+                            className="h-4 w-4 accent-[#FF5500]"
+                          />
+                          <span>💳 Habilitar Pago Mixto (Dividir en dos métodos)</span>
                         </label>
-                        <select
-                          value={metodoPagoAbono}
-                          onChange={(e) => setMetodoPagoAbono(e.target.value)}
-                          className="w-full rounded border border-neutral-300 bg-white px-3 py-2 font-bold outline-none focus:border-[#FF5500]"
-                        >
-                          {metodosPago.map((m) => (
-                            <option key={m} value={m}>
-                              {m}
-                            </option>
-                          ))}
-                        </select>
+
+                        {!pagoMixtoAbono ? (
+                          <div className="mt-2">
+                            <label className="mb-1 block font-bold uppercase text-neutral-700">
+                              Método de Pago recibido
+                            </label>
+                            <select
+                              value={metodoPagoAbono}
+                              onChange={(e) => setMetodoPagoAbono(e.target.value)}
+                              className="w-full rounded border border-neutral-300 bg-white px-3 py-2 font-bold outline-none focus:border-[#FF5500]"
+                            >
+                              {metodosPago.map((m) => (
+                                <option key={m} value={m}>
+                                  {m}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : (
+                          <div className="mt-2 space-y-2 rounded border border-amber-300 bg-amber-50/70 p-2.5">
+                            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                              <div>
+                                <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                                  Método 1
+                                </label>
+                                <select
+                                  value={metodoPagoAbono1}
+                                  onChange={(e) => setMetodoPagoAbono1(e.target.value)}
+                                  className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-bold outline-none focus:border-[#FF5500]"
+                                >
+                                  {metodosPago.map((m) => (
+                                    <option key={m} value={m}>
+                                      {m}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div className="mt-1 flex items-center gap-1">
+                                  <span className="text-[10px] font-bold text-neutral-500">Monto 1 USD:</span>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    placeholder="0.00"
+                                    value={montoMetodoAbono1Usd}
+                                    onChange={(e) => {
+                                      const val = limpiarInputDecimal(e.target.value)
+                                      setMontoMetodoAbono1Usd(val)
+                                      if (abonoNum > 0) {
+                                        const rest = Math.max(
+                                          0,
+                                          Number((abonoNum - Number(val || 0)).toFixed(2)),
+                                        )
+                                        setMontoMetodoAbono2Usd(rest > 0 ? String(rest) : '')
+                                      }
+                                    }}
+                                    className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                                  />
+                                </div>
+                                {tasa && Number(montoMetodoAbono1Usd || 0) > 0 && (
+                                  <p className="mt-0.5 text-right font-mono text-[10px] text-neutral-500">
+                                    ≈ {fmtVES(Number(montoMetodoAbono1Usd) * tasa)} (a la Tasa del Día)
+                                  </p>
+                                )}
+                              </div>
+
+                              <div>
+                                <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                                  Método 2
+                                </label>
+                                <select
+                                  value={metodoPagoAbono2}
+                                  onChange={(e) => setMetodoPagoAbono2(e.target.value)}
+                                  className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-bold outline-none focus:border-[#FF5500]"
+                                >
+                                  {metodosPago.map((m) => (
+                                    <option key={m} value={m}>
+                                      {m}
+                                    </option>
+                                  ))}
+                                </select>
+                                <div className="mt-1 flex items-center gap-1">
+                                  <span className="text-[10px] font-bold text-neutral-500">Monto 2 USD:</span>
+                                  <input
+                                    type="text"
+                                    inputMode="decimal"
+                                    placeholder="0.00"
+                                    value={montoMetodoAbono2Usd}
+                                    onChange={(e) =>
+                                      setMontoMetodoAbono2Usd(limpiarInputDecimal(e.target.value))
+                                    }
+                                    className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                                  />
+                                </div>
+                                {tasa && Number(montoMetodoAbono2Usd || 0) > 0 && (
+                                  <p className="mt-0.5 text-right font-mono text-[10px] text-neutral-500">
+                                    ≈ {fmtVES(Number(montoMetodoAbono2Usd) * tasa)} (a la Tasa del Día)
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between border-t border-amber-200 pt-1.5 font-mono text-[11px]">
+                              <span>
+                                Suma Mixta:{' '}
+                                <b>
+                                  {fmtUSD(
+                                    Number(montoMetodoAbono1Usd || 0) +
+                                      Number(montoMetodoAbono2Usd || 0),
+                                  )}
+                                </b>
+                              </span>
+                              <span
+                                className={
+                                  Math.abs(
+                                    Number(montoMetodoAbono1Usd || 0) +
+                                      Number(montoMetodoAbono2Usd || 0) -
+                                      abonoNum,
+                                  ) < 0.01
+                                    ? 'font-bold text-emerald-700'
+                                    : 'font-bold text-red-600'
+                                }
+                              >
+                                {Math.abs(
+                                  Number(montoMetodoAbono1Usd || 0) +
+                                    Number(montoMetodoAbono2Usd || 0) -
+                                    abonoNum,
+                                ) < 0.01
+                                  ? '✓ Cuadra con el abono hoy'
+                                  : `⚠️ Diferencia: ${fmtUSD(Math.abs(Number(montoMetodoAbono1Usd || 0) + Number(montoMetodoAbono2Usd || 0) - abonoNum))}`}
+                              </span>
+                            </div>
+                          </div>
+                        )}
                       </div>
 
                       <div className="rounded border border-emerald-200 bg-emerald-50 p-3 font-mono text-xs text-emerald-900">
@@ -1929,6 +2535,190 @@ export default function AlquileresModule({
                   >
                     {procesando && <Loader2 size={14} className="animate-spin" />}
                     <span>Confirmar Extensión</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* =================================================================
+            MODAL 3: DEVOLUCIÓN PARCIAL DE EQUIPOS DE OBRA
+           ================================================================= */}
+        {modalDevolucionParcial && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-lg overflow-hidden rounded-md border border-neutral-700 bg-white shadow-2xl">
+              <div
+                className="flex items-center justify-between px-5 py-3.5 text-white"
+                style={{ background: NEGRO, borderBottom: `3px solid ${NARANJA}` }}
+              >
+                <div className="flex items-center gap-2">
+                  <PackageCheck size={18} color={NARANJA} />
+                  <h3 className="text-sm font-bold uppercase tracking-wider">
+                    📦 Recepción de Devolución Parcial
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setModalDevolucionParcial(null)}
+                  className="text-neutral-400 hover:text-white"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <form onSubmit={confirmarDevolucionParcial} className="space-y-4 p-5 text-xs">
+                {errorMsg && (
+                  <div className="flex items-center gap-2 rounded border border-red-300 bg-red-50 p-2.5 text-xs font-bold text-red-700">
+                    <TriangleAlert size={15} className="shrink-0" />
+                    <span>{errorMsg}</span>
+                  </div>
+                )}
+
+                <div className="rounded border border-neutral-200 bg-neutral-50 p-3 font-mono">
+                  <p className="text-sm font-bold text-neutral-900">
+                    Contrato:{' '}
+                    {modalDevolucionParcial.codigo_contrato ||
+                      modalDevolucionParcial.numero_contrato ||
+                      `CT-${modalDevolucionParcial.id}`}
+                  </p>
+                  <p className="text-neutral-600">
+                    Cliente:{' '}
+                    <b>{modalDevolucionParcial.cliente_nombre || 'Cliente de Obra'}</b>
+                  </p>
+                  {modalDevolucionParcial.direccion_obra && (
+                    <p className="text-[11px] text-neutral-500">
+                      Obra: {modalDevolucionParcial.direccion_obra}
+                    </p>
+                  )}
+                  <p className="text-[11px] text-neutral-500">
+                    Fecha de Salida: {fmtFecha(modalDevolucionParcial.fecha_inicio)} · Días pactados:{' '}
+                    {modalDevolucionParcial.dias_alquiler}d
+                  </p>
+                </div>
+
+                <div>
+                  <label className="mb-1 block font-bold uppercase text-neutral-700">
+                    Fecha de Ingreso Parcial a Galpón *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={fechaDevolucionParcial}
+                    onChange={(e) => setFechaDevolucionParcial(e.target.value)}
+                    className="w-full rounded border border-neutral-300 px-3 py-2 font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                  />
+                  <p className="mt-1 text-[11px] text-neutral-500">
+                    Días reales calculados para los equipos que regresan:{' '}
+                    <b>
+                      {diasEntreFechas(
+                        modalDevolucionParcial.fecha_inicio,
+                        fechaDevolucionParcial,
+                      )}{' '}
+                      día(s) de uso
+                    </b>
+                    .
+                  </p>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block font-bold uppercase text-neutral-700">
+                    Indica cuántas unidades regresa el cliente hoy:
+                  </label>
+                  <div className="max-h-56 divide-y divide-neutral-200 overflow-y-auto rounded border border-neutral-300 bg-white">
+                    {obtenerItemsConRespaldo(modalDevolucionParcial).map((it, idx) => {
+                      const idKey = it.inventario_id
+                        ? String(it.inventario_id)
+                        : `${it.codigo || 'eq'}_${idx}`
+                      const cantActiva = Number(it.cantidad || 0)
+                      const yaDevuelto = Boolean(it.devuelto)
+                      const precioDia = num(
+                        it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
+                      )
+
+                      return (
+                        <div key={idKey} className="flex items-center justify-between gap-3 p-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-neutral-900">{it.material}</p>
+                            <p className="font-mono text-[11px] text-neutral-500">
+                              {it.codigo} · {fmtUSD(precioDia)}/día · En obra:{' '}
+                              <b>{cantActiva} und.</b>
+                              {yaDevuelto && (
+                                <span className="ml-2 font-bold text-emerald-700">
+                                  [Lote ya devuelto]
+                                </span>
+                              )}
+                            </p>
+                          </div>
+
+                          {!yaDevuelto && (
+                            <div className="flex items-center gap-2">
+                              <span className="text-[11px] font-bold text-neutral-600">
+                                Devolver:
+                              </span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={devolucionCantidades[idKey] || ''}
+                                onChange={(e) => {
+                                  const val = limpiarInputEntero(e.target.value)
+                                  setDevolucionCantidades((prev) => ({
+                                    ...prev,
+                                    [idKey]: val,
+                                  }))
+                                }}
+                                className="w-16 rounded border border-neutral-300 px-2 py-1.5 text-center font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDevolucionCantidades((prev) => ({
+                                    ...prev,
+                                    [idKey]: String(cantActiva),
+                                  }))
+                                }}
+                                className="rounded bg-neutral-100 px-2 py-1 text-[10px] font-bold text-neutral-600 hover:bg-neutral-200"
+                                title="Devolver todo este ítem"
+                              >
+                                Todo
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+                  <p className="font-bold">Ajuste financiero automático:</p>
+                  <p className="mt-0.5 text-[11px]">
+                    Al confirmar, el sistema suma de inmediato estas unidades al stock disponible en
+                    galpón y ajusta el cobro diario solo a los{' '}
+                    {diasEntreFechas(
+                      modalDevolucionParcial.fecha_inicio,
+                      fechaDevolucionParcial,
+                    )}{' '}
+                    días de uso efectivo. Los equipos no devueltos continúan alquilados en obra.
+                  </p>
+                </div>
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setModalDevolucionParcial(null)}
+                    className="rounded border border-neutral-300 px-4 py-2 text-xs font-bold text-neutral-700"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={procesando}
+                    className="flex items-center gap-1.5 rounded px-5 py-2 text-xs font-bold text-white shadow"
+                    style={{ background: NARANJA }}
+                  >
+                    {procesando && <Loader2 size={14} className="animate-spin" />}
+                    <span>Confirmar Entrada Parcial a Galpón</span>
                   </button>
                 </div>
               </form>

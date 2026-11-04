@@ -1,0 +1,297 @@
+// ---------------------------------------------------------------------------
+// Identidad Corporativa y Utilidades Compartidas - ServiAlquiler DV, C.A.
+// Sistema Amigable de Control de Galpón, Alquileres y Facturación
+// ---------------------------------------------------------------------------
+
+export const NEGRO = '#111111'
+export const NARANJA = '#FF5500'
+export const FONT = "'Century Gothic', CenturyGothic, AppleGothic, 'Futura', sans-serif"
+export const LOGO_URL = '/Logo_SDV.jpeg'
+
+export const METODOS_PAGO_DEFAULT = [
+  'Efectivo USD',
+  'Efectivo Bs.',
+  'Pago Móvil',
+  'Zelle',
+  'Transferencia Bancaria',
+  'Mixto (USD + Bs.)',
+]
+
+export const obtenerMetodosPago = (config) => {
+  const raw = config?.metodos_pago
+  let lista = []
+  if (Array.isArray(raw)) {
+    lista = raw
+      .map((item) => {
+        if (typeof item === 'string') return item.trim()
+        if (item && typeof item === 'object') {
+          if (item.activo === false) return null
+          return String(item.nombre || item.metodo || item.label || '').trim()
+        }
+        return ''
+      })
+      .filter(Boolean)
+  } else if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        lista = parsed.map((x) => String(x?.nombre ?? x ?? '').trim()).filter(Boolean)
+      }
+    } catch {
+      // Ignorar JSON inválido
+    }
+  }
+  return lista.length > 0 ? lista : METODOS_PAGO_DEFAULT
+}
+
+export const num = (v) => {
+  if (v === '' || v === null || v === undefined) return 0
+  const limpio = typeof v === 'string' ? v.replace(',', '.').trim() : v
+  const n = Number(limpio)
+  return Number.isFinite(n) ? n : 0
+}
+
+// Permite cadena vacía '' mientras el usuario escribe, aceptando solo dígitos y un punto decimal
+export const limpiarInputDecimal = (valor) => {
+  if (valor === '' || valor === null || valor === undefined) return ''
+  const normalizado = String(valor).replace(/,/g, '.').replace(/[^0-9.]/g, '')
+  const partes = normalizado.split('.')
+  if (partes.length <= 1) return normalizado
+  return `${partes[0]}.${partes.slice(1).join('')}`
+}
+
+// Permite cadena vacía '' mientras el usuario escribe, aceptando solo números enteros
+export const limpiarInputEntero = (valor) => {
+  if (valor === '' || valor === null || valor === undefined) return ''
+  return String(valor).replace(/[^0-9]/g, '')
+}
+
+// Genera automáticamente el código de equipo: 3 letras de Categoría/Material + correlativo (ej. AND-005)
+export const generarCodigoEquipo = (categoria, material, listaExistente = []) => {
+  const limpiarTexto = (txt) =>
+    String(txt ?? '')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z]/g, '')
+      .toUpperCase()
+
+  const catLimpia = limpiarTexto(categoria)
+  const matLimpio = limpiarTexto(material)
+
+  let prefijo = ''
+  if (catLimpia && catLimpia !== 'GENERAL' && catLimpia.length >= 3) {
+    prefijo = catLimpia.slice(0, 3)
+  } else if (matLimpio.length >= 3) {
+    prefijo = matLimpio.slice(0, 3)
+  } else if (catLimpia.length >= 1) {
+    prefijo = (catLimpia + 'EQP').slice(0, 3)
+  } else {
+    prefijo = 'EQP'
+  }
+
+  let maxCorrelativo = 0
+  const regex = new RegExp(`^${prefijo}-?(\\d+)$`, 'i')
+
+  listaExistente.forEach((item) => {
+    const cod = String(item?.codigo ?? '').trim().toUpperCase()
+    const match = cod.match(regex)
+    if (match && match[1]) {
+      const n = parseInt(match[1], 10)
+      if (Number.isFinite(n) && n > maxCorrelativo) {
+        maxCorrelativo = n
+      }
+    }
+  })
+
+  const siguiente = maxCorrelativo + 1
+  return `${prefijo}-${String(siguiente).padStart(3, '0')}`
+}
+
+export const fmtUSD = (v) =>
+  new Intl.NumberFormat('es-VE', { style: 'currency', currency: 'USD' }).format(num(v))
+
+export const fmtVES = (v) =>
+  'Bs. ' +
+  new Intl.NumberFormat('es-VE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(num(v))
+
+export const fmtNum = (v) => new Intl.NumberFormat('es-VE').format(num(v))
+
+export const fmtFecha = (f) => {
+  if (!f) return '—'
+  const str = String(f)
+  const d = str.length === 10 ? new Date(str + 'T00:00:00') : new Date(str)
+  if (Number.isNaN(d.getTime())) return str
+  return d.toLocaleDateString('es-VE', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
+export const fmtFechaHora = (f) => {
+  if (!f) return '—'
+  const d = new Date(f)
+  if (Number.isNaN(d.getTime())) return fmtFecha(f)
+  return d.toLocaleString('es-VE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+export const hoyISO = () => {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+export const inicioSemanaISO = () => {
+  const d = new Date()
+  const day = d.getDay()
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1)
+  d.setDate(diff)
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dia = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dia}`
+}
+
+export const inicioMesISO = () => {
+  const d = new Date()
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  return `${y}-${m}-01`
+}
+
+export const fechaEnRango = (fechaValor, desdeISO, hastaISO) => {
+  if (!fechaValor) return false
+  const str = String(fechaValor)
+  let iso = str.slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const d = new Date(str)
+    if (Number.isNaN(d.getTime())) return false
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    const day = String(d.getDate()).padStart(2, '0')
+    iso = `${y}-${m}-${day}`
+  }
+  if (desdeISO && iso < desdeISO) return false
+  if (hastaISO && iso > hastaISO) return false
+  return true
+}
+
+export const sumarDiasISO = (fechaBase, dias) => {
+  const str = String(fechaBase || hoyISO()).slice(0, 10)
+  const d = new Date(str + 'T00:00:00')
+  if (Number.isNaN(d.getTime())) return hoyISO()
+  d.setDate(d.getDate() + num(dias))
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
+export const diasEntreHoyY = (fechaFin) => {
+  if (!fechaFin) return null
+  const str = String(fechaFin).slice(0, 10)
+  const fin = new Date(str + 'T00:00:00')
+  const hoy = new Date(hoyISO() + 'T00:00:00')
+  if (Number.isNaN(fin.getTime())) return null
+  return Math.round((fin.getTime() - hoy.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+export const esDeHoy = (fechaValor) => {
+  if (!fechaValor) return false
+  const hoy = hoyISO()
+  const str = String(fechaValor)
+  if (str.slice(0, 10) === hoy) return true
+  const d = new Date(str)
+  if (Number.isNaN(d.getTime())) return false
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}` === hoy
+}
+
+export const ordenarPorCodigo = (filas) =>
+  [...filas].sort((a, b) =>
+    String(a.codigo ?? '').localeCompare(String(b.codigo ?? ''), 'es', { numeric: true }),
+  )
+
+// Normalización de roles amigables: 'Administrador', 'Administracion', 'Galpon' (con compatibilidad 'Patio')
+export const normalizarRol = (rol) => {
+  const r = String(rol ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (r.includes('administrador') || r === 'admin' || r === 'superadmin') return 'Administrador'
+  if (r.includes('administracion')) return 'Administracion'
+  if (r.includes('galpon') || r.includes('patio') || r.includes('operador') || r.includes('despacho'))
+    return 'Galpon'
+  return 'Administrador'
+}
+
+export const etiquetaRol = (rol) => {
+  const r = normalizarRol(rol)
+  if (r === 'Administrador') return 'Administrador General'
+  if (r === 'Administracion') return 'Administración y Facturación'
+  if (r === 'Galpon') return 'Encargado de Galpón'
+  return r
+}
+
+export const permisosPorRol = (rol) => {
+  const r = normalizarRol(rol)
+  const esGalpon = r === 'Galpon'
+  return {
+    rol: r,
+    esAdmin: r === 'Administrador',
+    esAdministracion: r === 'Administracion',
+    esGalpon: esGalpon,
+    puedeEditarTasa: r === 'Administrador',
+    puedeCrearEditarInventario: r === 'Administrador' || r === 'Administracion' || esGalpon,
+    puedeEliminarInventario: r === 'Administrador',
+    puedeExportarReportes: true,
+    puedeVerMontosVentas: !esGalpon,
+    puedeGestionarUsuarios: r === 'Administrador',
+    modulosPermitidos:
+      r === 'Administrador'
+        ? [
+            'dashboard',
+            'inventario',
+            'alquileres',
+            'prestamos',
+            'clientes',
+            'reportes',
+            'usuarios',
+          ]
+        : r === 'Administracion'
+          ? ['dashboard', 'inventario', 'alquileres', 'prestamos', 'clientes', 'reportes']
+          : ['inventario', 'alquileres', 'prestamos', 'reportes'],
+  }
+}
+
+// Carga el logo en Base64 para incrustarlo en reportes PDF
+let logoCache = null
+export const cargarLogoBase64 = async () => {
+  if (logoCache) return logoCache
+  try {
+    const res = await fetch(LOGO_URL)
+    if (!res.ok) return null
+    const blob = await res.blob()
+    return await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onloadend = () => {
+        logoCache = reader.result
+        resolve(logoCache)
+      }
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}

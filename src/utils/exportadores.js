@@ -257,7 +257,7 @@ export const generarFacturaContratoPDF = async ({ contrato, cliente, items, tasa
   doc.setFontSize(9.5)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(255, 85, 0)
-  doc.text('Alquiler y Venta de Equipos para la Construcción', logo ? 40 : 14, 22)
+  doc.text('Alquiler de Equipos para la Construcción', logo ? 40 : 14, 22)
 
   const nro =
     contrato?.codigo_contrato ||
@@ -525,7 +525,7 @@ export const exportarReporteVentasPDF = async ({
   dibujarEncabezadoCorporativo(
     doc,
     logo,
-    'CIERRE DE VENTAS Y FACTURACIÓN',
+    'CIERRE DE FACTURACIÓN Y ALQUILERES',
     `Período: ${fmtFecha(desde)} al ${fmtFecha(hasta)}`,
     `Tasa del Día: ${tasa > 0 ? fmtVES(tasa) : '—'}`,
   )
@@ -600,7 +600,7 @@ export const exportarReporteVentasPDF = async ({
     finalY + 14,
   )
 
-  doc.save(`Cierre_Ventas_ServiAlquiler_${desde}_${hasta}.pdf`)
+  doc.save(`Cierre_Facturacion_ServiAlquiler_${desde}_${hasta}.pdf`)
 }
 
 export const exportarReporteVentasExcel = ({
@@ -640,8 +640,8 @@ export const exportarReporteVentasExcel = ({
 
   const hoja = XLSX.utils.json_to_sheet(datos)
   const libro = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(libro, hoja, 'Cierre_Ventas')
-  XLSX.writeFile(libro, `Cierre_Ventas_${desde}_${hasta}.xlsx`)
+  XLSX.utils.book_append_sheet(libro, hoja, 'Cierre_Facturacion')
+  XLSX.writeFile(libro, `Cierre_Facturacion_ServiAlquiler_${desde}_${hasta}.xlsx`)
 }
 
 // ---------------------------------------------------------------------------

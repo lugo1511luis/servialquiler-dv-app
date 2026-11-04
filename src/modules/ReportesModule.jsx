@@ -140,7 +140,7 @@ export default function ReportesModule({
 
   const tipsReportes = [
     'Elige el rango de fechas que deseas consultar arriba a la derecha (puedes pulsar "Hoy", "Esta Semana" o "Este Mes" para ir directo).',
-    'Pestaña A (Cierre de Ventas): Muestra cuánto dinero entró a la empresa, cuánto por fletes y el desglose de lo que se cobró por Zelle, Pago Móvil o Efectivo.',
+    'Pestaña A (Cierre de Facturación): Muestra cuánto dinero entró a la empresa por alquileres, cuánto por fletes y el desglose de lo que se cobró por Zelle, Pago Móvil o Efectivo.',
     'Pestaña B (Historial de Entradas y Salidas de Galpón): Te muestra cada movimiento de mercancía con fecha, hora, responsable y cuántos equipos quedaron en galpón.',
     'Descarga los reportes: El botón PDF genera un documento formal listo para imprimir o enviar por WhatsApp; el botón Excel te genera la tabla para abrir en la computadora y sacar cuentas.',
   ]
@@ -171,7 +171,7 @@ export default function ReportesModule({
               }}
             >
               <DollarSign size={15} />
-              <span>Pestaña A · Cierre de Ventas y Facturación</span>
+              <span>Pestaña A · Cierre de Facturación y Alquileres</span>
             </button>
           )}
           <button
@@ -360,7 +360,7 @@ export default function ReportesModule({
                   title="Descargar tabla en Excel para sacar cuentas o hacer cálculos"
                 >
                   <FileSpreadsheet size={14} />
-                  <span>Exportar Ventas en Excel</span>
+                  <span>Exportar Facturación en Excel</span>
                   <span className="hidden sm:inline font-mono text-[9px] text-emerald-300">(Para Cuentas)</span>
                 </button>
               </div>

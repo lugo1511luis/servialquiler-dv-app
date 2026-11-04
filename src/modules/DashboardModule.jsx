@@ -258,7 +258,7 @@ export default function DashboardModule({
         />
         {permisos.puedeVerMontosVentas ? (
           <TarjetaResumen
-            titulo="Ventas del Día"
+            titulo="Facturación del Día"
             valor={fmtUSD(ventasHoy.total)}
             subtitulo={`${tasa ? fmtVES(ventasHoy.total * tasa) : '—'} · ${ventasHoy.cantidad} despacho(s) hoy`}
             icono={ShoppingCart}

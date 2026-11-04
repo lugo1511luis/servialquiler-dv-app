@@ -64,7 +64,7 @@ const DEFINICION_MODULOS = [
   {
     id: 'reportes',
     nombre: 'Reportes e Historial',
-    subtitulo: 'Cierre de ventas y entradas/salidas',
+    subtitulo: 'Cierre de facturación y movimientos',
     icono: BarChart3,
   },
   {

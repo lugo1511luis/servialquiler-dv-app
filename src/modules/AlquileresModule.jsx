@@ -301,11 +301,18 @@ export default function AlquileresModule({
   const totalContratoUSD = Number((subtotalEquiposUSD + fleteUSD).toFixed(2))
   const totalConGarantiaUSD = Number((totalContratoUSD + garantiaUSD).toFixed(2))
 
-  // Cálculos de Abono Directo y Restante por Cobrar en tiempo real
+  // Cálculos de Abono Directo y Restante por Cobrar en tiempo real (Suma automática en Pago Mixto)
+  const sumaMixtaHoy = useMemo(() => {
+    return Number((Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0)).toFixed(2))
+  }, [montoMetodo1Usd, montoMetodo2Usd])
+
   const abonoHoyNum = useMemo(() => {
+    if (pagoMixto) {
+      return Math.min(totalContratoUSD, Math.max(0, sumaMixtaHoy))
+    }
     const escrito = Number(montoAbonadoHoyUsd || 0)
     return Math.min(totalContratoUSD, Math.max(0, Number(escrito.toFixed(2))))
-  }, [montoAbonadoHoyUsd, totalContratoUSD])
+  }, [pagoMixto, sumaMixtaHoy, montoAbonadoHoyUsd, totalContratoUSD])
 
   const restantePorCobrarHoyUSD = useMemo(
     () => Math.max(0, Number((totalContratoUSD - abonoHoyNum).toFixed(2))),
@@ -316,6 +323,116 @@ export default function AlquileresModule({
     () => calcularEstadoPago(abonoHoyNum, restantePorCobrarHoyUSD),
     [abonoHoyNum, restantePorCobrarHoyUSD],
   )
+
+  // Sincronización automática bidireccional para Pago Mixto en Facturación
+  const cambiarMontoMetodo1 = (valTexto) => {
+    const val = limpiarInputDecimal(valTexto)
+    setMontoMetodo1Usd(val)
+    const m1 = Number(val || 0)
+    const m2 = Number(montoMetodo2Usd || 0)
+    const suma = Number((m1 + m2).toFixed(2))
+    setMontoAbonadoHoyUsd(suma > 0 ? String(suma) : '')
+  }
+
+  const cambiarMontoMetodo2 = (valTexto) => {
+    const val = limpiarInputDecimal(valTexto)
+    setMontoMetodo2Usd(val)
+    const m1 = Number(montoMetodo1Usd || 0)
+    const m2 = Number(val || 0)
+    const suma = Number((m1 + m2).toFixed(2))
+    setMontoAbonadoHoyUsd(suma > 0 ? String(suma) : '')
+  }
+
+  const cambiarMontoAbonadoGeneral = (valTexto) => {
+    const limpio = limpiarInputDecimal(valTexto)
+    setMontoAbonadoHoyUsd(limpio)
+    if (pagoMixto) {
+      const numTotal = Number(limpio || 0)
+      if (numTotal > 0) {
+        const m1 = Number(montoMetodo1Usd || 0)
+        if (m1 > 0 && numTotal >= m1) {
+          setMontoMetodo2Usd(Number((numTotal - m1).toFixed(2)).toString())
+        } else {
+          const mitad = Number((numTotal / 2).toFixed(2))
+          const resto = Number((numTotal - mitad).toFixed(2))
+          setMontoMetodo1Usd(String(mitad))
+          setMontoMetodo2Usd(String(resto))
+        }
+      } else {
+        setMontoMetodo1Usd('')
+        setMontoMetodo2Usd('')
+      }
+    }
+  }
+
+  const alternarPagoMixto = (activando) => {
+    setPagoMixto(activando)
+    if (activando) {
+      const base = Number(montoAbonadoHoyUsd || 0) > 0 ? Number(montoAbonadoHoyUsd) : totalContratoUSD
+      if (base > 0) {
+        const mitad = Number((base / 2).toFixed(2))
+        const resto = Number((base - mitad).toFixed(2))
+        setMontoMetodo1Usd(String(mitad))
+        setMontoMetodo2Usd(String(resto))
+        setMontoAbonadoHoyUsd(String(base))
+      }
+    }
+  }
+
+  // Sincronización automática para Pago Mixto en Modal de Abono
+  const cambiarMontoMetodoAbono1 = (valTexto) => {
+    const val = limpiarInputDecimal(valTexto)
+    setMontoMetodoAbono1Usd(val)
+    const m1 = Number(val || 0)
+    const m2 = Number(montoMetodoAbono2Usd || 0)
+    const suma = Number((m1 + m2).toFixed(2))
+    setMontoNuevoAbonoUsd(suma > 0 ? String(suma) : '')
+  }
+
+  const cambiarMontoMetodoAbono2 = (valTexto) => {
+    const val = limpiarInputDecimal(valTexto)
+    setMontoMetodoAbono2Usd(val)
+    const m1 = Number(montoMetodoAbono1Usd || 0)
+    const m2 = Number(val || 0)
+    const suma = Number((m1 + m2).toFixed(2))
+    setMontoNuevoAbonoUsd(suma > 0 ? String(suma) : '')
+  }
+
+  const cambiarMontoNuevoAbonoGeneral = (valTexto) => {
+    const limpio = limpiarInputDecimal(valTexto)
+    setMontoNuevoAbonoUsd(limpio)
+    if (pagoMixtoAbono) {
+      const numTotal = Number(limpio || 0)
+      if (numTotal > 0) {
+        const m1 = Number(montoMetodoAbono1Usd || 0)
+        if (m1 > 0 && numTotal >= m1) {
+          setMontoMetodoAbono2Usd(Number((numTotal - m1).toFixed(2)).toString())
+        } else {
+          const mitad = Number((numTotal / 2).toFixed(2))
+          const resto = Number((numTotal - mitad).toFixed(2))
+          setMontoMetodoAbono1Usd(String(mitad))
+          setMontoMetodoAbono2Usd(String(resto))
+        }
+      } else {
+        setMontoMetodoAbono1Usd('')
+        setMontoMetodoAbono2Usd('')
+      }
+    }
+  }
+
+  const alternarPagoMixtoAbono = (activando, restanteActual) => {
+    setPagoMixtoAbono(activando)
+    if (activando) {
+      const base = Number(montoNuevoAbonoUsd || 0) > 0 ? Number(montoNuevoAbonoUsd) : restanteActual
+      if (base > 0) {
+        const mitad = Number((base / 2).toFixed(2))
+        const resto = Number((base - mitad).toFixed(2))
+        setMontoMetodoAbono1Usd(String(mitad))
+        setMontoMetodoAbono2Usd(String(resto))
+        setMontoNuevoAbonoUsd(String(base))
+      }
+    }
+  }
 
   const agregarAlDespacho = (eq) => {
     const dispPropio = num(eq.stock_propio_disponible)
@@ -442,12 +559,13 @@ export default function AlquileresModule({
       return
     }
 
-    if (pagoMixto && abonoHoyNum > 0) {
+    if (pagoMixto) {
       const m1 = num(montoMetodo1Usd)
       const m2 = num(montoMetodo2Usd)
-      if (Math.abs(m1 + m2 - abonoHoyNum) > 0.01) {
+      const suma = Number((m1 + m2).toFixed(2))
+      if (suma > totalContratoUSD + 0.01) {
         setErrorMsg(
-          `La suma de los métodos de pago mixtos ($${m1.toFixed(2)} + $${m2.toFixed(2)} = $${(m1 + m2).toFixed(2)}) debe ser exactamente igual al monto abonado hoy ($${abonoHoyNum.toFixed(2)}).`,
+          `La suma de los métodos mixtos ($${suma.toFixed(2)}) no puede ser mayor al total del contrato ($${totalContratoUSD.toFixed(2)}).`,
         )
         return
       }
@@ -599,27 +717,32 @@ export default function AlquileresModule({
   const confirmarRegistroAbono = async (e) => {
     e.preventDefault()
     if (!modalAbono) return
-    const abono = Number(montoNuevoAbonoUsd || 0)
-    if (abono <= 0) {
-      setErrorMsg('Escribe un monto de abono en USD mayor a 0.')
+    const datosPago = obtenerDatosPagoContrato(modalAbono)
+    const m1 = num(montoMetodoAbono1Usd)
+    const m2 = num(montoMetodoAbono2Usd)
+
+    const abonoBruto = pagoMixtoAbono
+      ? Number((m1 + m2).toFixed(2))
+      : Number(Number(montoNuevoAbonoUsd || 0).toFixed(2))
+
+    if (abonoBruto <= 0) {
+      setErrorMsg('Ingresa un monto de abono en USD mayor a 0.')
       return
     }
 
-    const datosPago = obtenerDatosPagoContrato(modalAbono)
-    const abonoEfectivo = Math.min(datosPago.restante, Number(abono.toFixed(2)))
+    if (abonoBruto > datosPago.restante + 0.01) {
+      setErrorMsg(
+        `El monto a abonar ($${abonoBruto.toFixed(2)}) supera el saldo pendiente actual ($${datosPago.restante.toFixed(2)}).`,
+      )
+      return
+    }
+
+    const abonoEfectivo = Math.min(datosPago.restante, abonoBruto)
 
     let metodoFinal = metodoPagoAbono || modalAbono.metodo_pago
     let desgloseFinal = null
 
     if (pagoMixtoAbono) {
-      const m1 = num(montoMetodoAbono1Usd)
-      const m2 = num(montoMetodoAbono2Usd)
-      if (Math.abs(m1 + m2 - abonoEfectivo) > 0.01) {
-        setErrorMsg(
-          `La suma de los métodos mixtos ($${m1.toFixed(2)} + $${m2.toFixed(2)} = $${(m1 + m2).toFixed(2)}) debe coincidir exactamente con el abono ($${abonoEfectivo.toFixed(2)}).`,
-        )
-        return
-      }
       metodoFinal = `Mixto: ${metodoPagoAbono1} ($${m1.toFixed(2)}) + ${metodoPagoAbono2} ($${m2.toFixed(2)})`
       desgloseFinal = {
         mixto: true,
@@ -674,6 +797,9 @@ export default function AlquileresModule({
     setProcesando(false)
     setModalAbono(null)
     setMontoNuevoAbonoUsd('')
+    setPagoMixtoAbono(false)
+    setMontoMetodoAbono1Usd('')
+    setMontoMetodoAbono2Usd('')
     onRecargarTodo()
   }
 
@@ -1563,16 +1689,38 @@ export default function AlquileresModule({
                 <div className="rounded-md border border-neutral-300 bg-neutral-50 p-3">
                   <div className="grid gap-2.5 sm:grid-cols-2">
                     <div>
-                      <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-700">
-                        Monto Abonado / Pagado Hoy (USD)
-                      </label>
+                      <div className="mb-1 flex items-center justify-between">
+                        <label className="block text-[10px] font-bold uppercase text-neutral-700">
+                          Monto Abonado / Pagado Hoy (USD)
+                        </label>
+                        {totalContratoUSD > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMontoAbonadoHoyUsd(totalContratoUSD.toFixed(2))
+                              if (pagoMixto) {
+                                const mitad = Number((totalContratoUSD / 2).toFixed(2))
+                                const resto = Number((totalContratoUSD - mitad).toFixed(2))
+                                setMontoMetodo1Usd(String(mitad))
+                                setMontoMetodo2Usd(String(resto))
+                              }
+                            }}
+                            className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 hover:bg-emerald-200"
+                            title="Completar el 100% del pago del contrato hoy"
+                          >
+                            Pagar Todo ({fmtUSD(totalContratoUSD)})
+                          </button>
+                        )}
+                      </div>
                       <input
                         type="text"
                         inputMode="decimal"
-                        value={montoAbonadoHoyUsd}
-                        onChange={(e) =>
-                          setMontoAbonadoHoyUsd(limpiarInputDecimal(e.target.value))
+                        value={
+                          pagoMixto
+                            ? (sumaMixtaHoy > 0 ? sumaMixtaHoy.toFixed(2) : montoAbonadoHoyUsd)
+                            : montoAbonadoHoyUsd
                         }
+                        onChange={(e) => cambiarMontoAbonadoGeneral(e.target.value)}
                         placeholder={
                           totalContratoUSD > 0
                             ? `Ej. ${totalContratoUSD.toFixed(2)}`
@@ -1580,6 +1728,11 @@ export default function AlquileresModule({
                         }
                         className="w-full rounded border border-neutral-300 bg-white px-2.5 py-2 font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
                       />
+                      {pagoMixto && (
+                        <p className="mt-0.5 text-[10px] font-bold text-neutral-500">
+                          (Calculado automáticamente sumando Método 1 + Método 2)
+                        </p>
+                      )}
                     </div>
 
                     <div>
@@ -1615,16 +1768,7 @@ export default function AlquileresModule({
                       <input
                         type="checkbox"
                         checked={pagoMixto}
-                        onChange={(e) => {
-                          const activando = e.target.checked
-                          setPagoMixto(activando)
-                          if (activando && abonoHoyNum > 0) {
-                            const mitad = (abonoHoyNum / 2).toFixed(2)
-                            const resto = (abonoHoyNum - Number(mitad)).toFixed(2)
-                            setMontoMetodo1Usd(mitad)
-                            setMontoMetodo2Usd(resto)
-                          }
-                        }}
+                        onChange={(e) => alternarPagoMixto(e.target.checked)}
                         className="h-4 w-4 accent-[#FF5500]"
                       />
                       <CreditCard size={14} color={NARANJA} />
@@ -1656,17 +1800,7 @@ export default function AlquileresModule({
                                 inputMode="decimal"
                                 placeholder="0.00"
                                 value={montoMetodo1Usd}
-                                onChange={(e) => {
-                                  const val = limpiarInputDecimal(e.target.value)
-                                  setMontoMetodo1Usd(val)
-                                  if (abonoHoyNum > 0) {
-                                    const restante = Math.max(
-                                      0,
-                                      Number((abonoHoyNum - Number(val || 0)).toFixed(2)),
-                                    )
-                                    setMontoMetodo2Usd(restante > 0 ? String(restante) : '')
-                                  }
-                                }}
+                                onChange={(e) => cambiarMontoMetodo1(e.target.value)}
                                 className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
                               />
                             </div>
@@ -1699,9 +1833,7 @@ export default function AlquileresModule({
                                 inputMode="decimal"
                                 placeholder="0.00"
                                 value={montoMetodo2Usd}
-                                onChange={(e) =>
-                                  setMontoMetodo2Usd(limpiarInputDecimal(e.target.value))
-                                }
+                                onChange={(e) => cambiarMontoMetodo2(e.target.value)}
                                 className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
                               />
                             </div>
@@ -1713,36 +1845,50 @@ export default function AlquileresModule({
                           </div>
                         </div>
 
-                        {/* Comparación de suma vs total abonado */}
+                        {/* Comparación y resumen de la suma en vivo */}
                         <div className="flex items-center justify-between border-t border-amber-200 pt-1.5 font-mono text-[11px]">
                           <span>
                             Suma Mixta:{' '}
-                            <b>
-                              {fmtUSD(
-                                Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0),
-                              )}
-                            </b>
+                            <b>{fmtUSD(sumaMixtaHoy)}</b>
                           </span>
-                          <span
-                            className={
-                              Math.abs(
-                                Number(montoMetodo1Usd || 0) +
-                                  Number(montoMetodo2Usd || 0) -
-                                  abonoHoyNum,
-                              ) < 0.01
-                                ? 'font-bold text-emerald-700'
-                                : 'font-bold text-red-600'
-                            }
-                          >
-                            {Math.abs(
-                              Number(montoMetodo1Usd || 0) +
-                                Number(montoMetodo2Usd || 0) -
-                                abonoHoyNum,
-                            ) < 0.01
-                              ? 'Cuadra exacto con el abono de hoy'
-                              : `Diferencia: ${fmtUSD(Math.abs(Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0) - abonoHoyNum))}`}
+                          <span>
+                            {sumaMixtaHoy > totalContratoUSD + 0.01 ? (
+                              <span className="flex items-center gap-1 font-bold text-red-600">
+                                <TriangleAlert size={14} className="text-red-600" />
+                                <span>Supera el total ({fmtUSD(totalContratoUSD)})</span>
+                              </span>
+                            ) : Math.abs(sumaMixtaHoy - totalContratoUSD) <= 0.01 && totalContratoUSD > 0 ? (
+                              <span className="flex items-center gap-1 font-bold text-emerald-700">
+                                <Check size={14} className="text-emerald-700" />
+                                <span>Cubre el 100% (Sin saldo pendiente)</span>
+                              </span>
+                            ) : sumaMixtaHoy > 0 ? (
+                              <span className="flex items-center gap-1 font-bold text-emerald-700">
+                                <Check size={14} className="text-emerald-700" />
+                                <span>Abono registrado: {fmtUSD(sumaMixtaHoy)}</span>
+                              </span>
+                            ) : (
+                              <span className="text-neutral-500">Ingresa montos en Método 1 y 2</span>
+                            )}
                           </span>
                         </div>
+
+                        {/* Botón rápido para auto-completar el restante */}
+                        {totalContratoUSD > 0 && Math.abs(sumaMixtaHoy - totalContratoUSD) > 0.01 && (
+                          <div className="flex justify-end pt-0.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const m1 = Number(montoMetodo1Usd || 0)
+                                const restante = Math.max(0, Number((totalContratoUSD - m1).toFixed(2)))
+                                cambiarMontoMetodo2(restante > 0 ? String(restante) : '0')
+                              }}
+                              className="rounded border border-amber-400 bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900 hover:bg-amber-200"
+                            >
+                              Auto-completar resto en Método 2 ({fmtUSD(Math.max(0, totalContratoUSD - Number(montoMetodo1Usd || 0)))})
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -2085,6 +2231,9 @@ export default function AlquileresModule({
                             <button
                               onClick={() => {
                                 setMontoNuevoAbonoUsd('')
+                                setPagoMixtoAbono(false)
+                                setMontoMetodoAbono1Usd('')
+                                setMontoMetodoAbono2Usd('')
                                 setMetodoPagoAbono(c.metodo_pago || metodosPago[0] || 'Efectivo USD')
                                 setErrorMsg(null)
                                 setModalAbono(c)
@@ -2213,10 +2362,13 @@ export default function AlquileresModule({
 
                 {(() => {
                   const datosPago = obtenerDatosPagoContrato(modalAbono)
-                  const abonoNum = Math.min(
-                    datosPago.restante,
-                    Math.max(0, Number(montoNuevoAbonoUsd || 0)),
-                  )
+                  const sumaMixtaAbono = Number((Number(montoMetodoAbono1Usd || 0) + Number(montoMetodoAbono2Usd || 0)).toFixed(2))
+                  const abonoNum = pagoMixtoAbono
+                    ? Math.min(datosPago.restante, Math.max(0, sumaMixtaAbono))
+                    : Math.min(
+                        datosPago.restante,
+                        Math.max(0, Number(montoNuevoAbonoUsd || 0)),
+                      )
                   const nuevoRestante = Math.max(
                     0,
                     Number((datosPago.restante - abonoNum).toFixed(2)),
@@ -2242,21 +2394,47 @@ export default function AlquileresModule({
                       </div>
 
                       <div>
-                        <label className="mb-1 block font-bold uppercase text-neutral-700">
-                          Monto en USD que abona hoy *
-                        </label>
+                        <div className="mb-1 flex items-center justify-between">
+                          <label className="block font-bold uppercase text-neutral-700">
+                            Monto en USD que abona hoy *
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const total = datosPago.restante
+                              setMontoNuevoAbonoUsd(total.toFixed(2))
+                              if (pagoMixtoAbono) {
+                                const mitad = Number((total / 2).toFixed(2))
+                                const resto = Number((total - mitad).toFixed(2))
+                                setMontoMetodoAbono1Usd(String(mitad))
+                                setMontoMetodoAbono2Usd(String(resto))
+                              }
+                            }}
+                            className="rounded bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800 hover:bg-emerald-200"
+                            title="Abonar el 100% de la deuda pendiente"
+                          >
+                            Abonar Deuda Total ({fmtUSD(datosPago.restante)})
+                          </button>
+                        </div>
                         <input
                           type="text"
                           inputMode="decimal"
                           autoFocus
                           required
                           placeholder={`Ej. ${datosPago.restante.toFixed(2)}`}
-                          value={montoNuevoAbonoUsd}
-                          onChange={(e) =>
-                            setMontoNuevoAbonoUsd(limpiarInputDecimal(e.target.value))
+                          value={
+                            pagoMixtoAbono
+                              ? (sumaMixtaAbono > 0 ? sumaMixtaAbono.toFixed(2) : montoNuevoAbonoUsd)
+                              : montoNuevoAbonoUsd
                           }
+                          onChange={(e) => cambiarMontoNuevoAbonoGeneral(e.target.value)}
                           className="w-full rounded border border-neutral-300 px-3 py-2 font-mono text-sm font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
                         />
+                        {pagoMixtoAbono && (
+                          <p className="mt-0.5 text-[10px] font-bold text-neutral-500">
+                            (Calculado automáticamente sumando Método 1 + Método 2)
+                          </p>
+                        )}
                         {tasa && abonoNum > 0 && (
                           <p className="mt-1 font-mono text-[11px] text-neutral-600">
                             Equivalente hoy: <b>{fmtVES(abonoNum * tasa)}</b> (a la Tasa del Día)
@@ -2270,16 +2448,7 @@ export default function AlquileresModule({
                           <input
                             type="checkbox"
                             checked={pagoMixtoAbono}
-                            onChange={(e) => {
-                              const activando = e.target.checked
-                              setPagoMixtoAbono(activando)
-                              if (activando && abonoNum > 0) {
-                                const mitad = (abonoNum / 2).toFixed(2)
-                                const resto = (abonoNum - Number(mitad)).toFixed(2)
-                                setMontoMetodoAbono1Usd(mitad)
-                                setMontoMetodoAbono2Usd(resto)
-                              }
-                            }}
+                            onChange={(e) => alternarPagoMixtoAbono(e.target.checked, datosPago.restante)}
                             className="h-4 w-4 accent-[#FF5500]"
                           />
                           <CreditCard size={15} color={NARANJA} />
@@ -2328,17 +2497,7 @@ export default function AlquileresModule({
                                     inputMode="decimal"
                                     placeholder="0.00"
                                     value={montoMetodoAbono1Usd}
-                                    onChange={(e) => {
-                                      const val = limpiarInputDecimal(e.target.value)
-                                      setMontoMetodoAbono1Usd(val)
-                                      if (abonoNum > 0) {
-                                        const rest = Math.max(
-                                          0,
-                                          Number((abonoNum - Number(val || 0)).toFixed(2)),
-                                        )
-                                        setMontoMetodoAbono2Usd(rest > 0 ? String(rest) : '')
-                                      }
-                                    }}
+                                    onChange={(e) => cambiarMontoMetodoAbono1(e.target.value)}
                                     className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
                                   />
                                 </div>
@@ -2371,9 +2530,7 @@ export default function AlquileresModule({
                                     inputMode="decimal"
                                     placeholder="0.00"
                                     value={montoMetodoAbono2Usd}
-                                    onChange={(e) =>
-                                      setMontoMetodoAbono2Usd(limpiarInputDecimal(e.target.value))
-                                    }
+                                    onChange={(e) => cambiarMontoMetodoAbono2(e.target.value)}
                                     className="w-full rounded border border-neutral-300 bg-white px-2 py-1 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
                                   />
                                 </div>
@@ -2388,50 +2545,46 @@ export default function AlquileresModule({
                             <div className="flex items-center justify-between border-t border-amber-200 pt-1.5 font-mono text-[11px]">
                               <span>
                                 Suma Mixta:{' '}
-                                <b>
-                                  {fmtUSD(
-                                    Number(montoMetodoAbono1Usd || 0) +
-                                      Number(montoMetodoAbono2Usd || 0),
-                                  )}
-                                </b>
+                                <b>{fmtUSD(sumaMixtaAbono)}</b>
                               </span>
-                              <span
-                                className={
-                                  Math.abs(
-                                    Number(montoMetodoAbono1Usd || 0) +
-                                      Number(montoMetodoAbono2Usd || 0) -
-                                      abonoNum,
-                                  ) < 0.01
-                                    ? 'font-bold text-emerald-700'
-                                    : 'font-bold text-red-600'
-                                }
-                              >
-                                {Math.abs(
-                                  Number(montoMetodoAbono1Usd || 0) +
-                                    Number(montoMetodoAbono2Usd || 0) -
-                                    abonoNum,
-                                ) < 0.01 ? (
-                                  <span className="flex items-center gap-1">
+                              <span>
+                                {sumaMixtaAbono > datosPago.restante + 0.01 ? (
+                                  <span className="flex items-center gap-1 font-bold text-red-600">
+                                    <TriangleAlert size={14} className="text-red-600" />
+                                    <span>Supera deuda ({fmtUSD(datosPago.restante)})</span>
+                                  </span>
+                                ) : Math.abs(sumaMixtaAbono - datosPago.restante) <= 0.01 && datosPago.restante > 0 ? (
+                                  <span className="flex items-center gap-1 font-bold text-emerald-700">
                                     <Check size={14} className="text-emerald-700" />
-                                    <span>Cuadra con el abono hoy</span>
+                                    <span>Cancela deuda total</span>
+                                  </span>
+                                ) : sumaMixtaAbono > 0 ? (
+                                  <span className="flex items-center gap-1 font-bold text-emerald-700">
+                                    <Check size={14} className="text-emerald-700" />
+                                    <span>Abono registrado</span>
                                   </span>
                                 ) : (
-                                  <span className="flex items-center gap-1">
-                                    <TriangleAlert size={14} className="text-red-600" />
-                                    <span>
-                                      Diferencia:{' '}
-                                      {fmtUSD(
-                                        Math.abs(
-                                          Number(montoMetodoAbono1Usd || 0) +
-                                            Number(montoMetodoAbono2Usd || 0) -
-                                            abonoNum,
-                                        ),
-                                      )}
-                                    </span>
-                                  </span>
+                                  <span className="text-neutral-500">Ingresa montos en Método 1 y 2</span>
                                 )}
                               </span>
                             </div>
+
+                            {/* Botón rápido para auto-completar el restante en Modal */}
+                            {datosPago.restante > 0 && Math.abs(sumaMixtaAbono - datosPago.restante) > 0.01 && (
+                              <div className="flex justify-end pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const m1 = Number(montoMetodoAbono1Usd || 0)
+                                    const restante = Math.max(0, Number((datosPago.restante - m1).toFixed(2)))
+                                    cambiarMontoMetodoAbono2(restante > 0 ? String(restante) : '0')
+                                  }}
+                                  className="rounded border border-amber-400 bg-amber-100 px-2 py-0.5 text-[10px] font-bold text-amber-900 hover:bg-amber-200"
+                                >
+                                  Auto-completar resto en Método 2 ({fmtUSD(Math.max(0, datosPago.restante - Number(montoMetodoAbono1Usd || 0)))})
+                                </button>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>

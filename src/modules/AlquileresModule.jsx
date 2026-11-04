@@ -17,7 +17,6 @@ import {
   CheckCircle2,
   Banknote,
   PackageCheck,
-  CreditCard,
   Check,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
@@ -153,6 +152,7 @@ export default function AlquileresModule({
   metodosPago = METODOS_PAGO_DEFAULT,
   tasa,
   permisos,
+  usuario,
   onRecargarTodo,
   onIrModulo,
 }) {
@@ -1079,7 +1079,7 @@ export default function AlquileresModule({
             stock_resultante: nuevoDisp,
             referencia_documento: refContrato,
             cliente_nombre: nombreCliente,
-            observaciones: `Devolución parcial de obra (${cantADevolver} und. recibidas tras ${diasUso} días de uso). Recibido por ${usuarioActual?.nombre_completo || usuarioActual?.username || 'Operador'}`,
+            observaciones: `Devolución parcial de obra (${cantADevolver} und. recibidas tras ${diasUso} días de uso). Recibido por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
           })
         }
       }
@@ -1965,15 +1965,15 @@ export default function AlquileresModule({
               onClick={() => {
                 setErrorMsg(null)
                 setAvisoAliado(null)
-                setMetodoPago(metodosPago[0] || 'Efectivo USD')
+                limpiarPagosFacturador()
                 setVistaFacturador(true)
               }}
-              className="flex items-center gap-1.5 rounded px-3.5 py-1.5 text-xs font-bold text-white shadow"
+              className="flex items-center gap-1.5 rounded px-3.5 py-1.5 text-xs font-bold text-white shadow hover:brightness-110"
               style={{ background: NARANJA }}
               title="Abrir la pantalla para registrar la salida de equipos y cobrar al cliente"
             >
               <Plus size={15} />
-              <span>+ Nuevo Despacho (Facturador de Equipos)</span>
+              <span>Nuevo Despacho (Facturador de Equipos)</span>
             </button>
           </div>
         </div>

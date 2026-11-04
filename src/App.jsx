@@ -444,6 +444,7 @@ function App() {
               metodosPago={metodosPago}
               tasa={tasa}
               permisos={permisos}
+              usuario={usuario}
               onRecargarTodo={recargarTodo}
               onIrModulo={setModuloActivo}
             />

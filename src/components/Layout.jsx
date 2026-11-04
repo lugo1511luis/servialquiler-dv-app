@@ -526,7 +526,7 @@ export function TopHeader({
               title="Agregar, editar o eliminar formas de pago del sistema"
             >
               <CreditCard size={15} color={NARANJA} />
-              <span>💳 Métodos de Pago</span>
+              <span>Métodos de Pago</span>
             </button>
           )}
 

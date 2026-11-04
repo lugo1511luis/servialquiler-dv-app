@@ -15,6 +15,8 @@ import {
   Upload,
   Download,
   Sparkles,
+  Tags,
+  CheckCircle2,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import {
@@ -27,6 +29,7 @@ import {
   NARANJA,
   NEGRO,
   num,
+  obtenerCategoriasInventario,
 } from '../utils/formatters'
 import {
   descargarPlantillaInventarioExcel,
@@ -53,6 +56,8 @@ export default function InventarioModule({
   inventario,
   tasa,
   permisos,
+  config,
+  onGuardarCategorias,
   cargando,
   onRecargar,
 }) {
@@ -65,6 +70,17 @@ export default function InventarioModule({
   const [errorModal, setErrorModal] = useState(null)
   const [mensajeImportacion, setMensajeImportacion] = useState(null)
   const inputArchivoRef = useRef(null)
+
+  // Gestor dinámico de categorías
+  const [modalCategoriasAbierto, setModalCategoriasAbierto] = useState(false)
+  const [nuevaCatTexto, setNuevaCatTexto] = useState('')
+  const [guardandoCat, setGuardandoCat] = useState(false)
+  const [errorCat, setErrorCat] = useState(null)
+
+  const categorias = useMemo(
+    () => obtenerCategoriasInventario(config, inventario),
+    [config, inventario],
+  )
 
   const filtrado = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
@@ -87,6 +103,60 @@ export default function InventarioModule({
     setForm(FORM_INICIAL)
     setErrorModal(null)
     setModalAbierto(true)
+  }
+
+  // ---- Funciones del Gestor Dinámico de Categorías -------------------------
+  const agregarCategoria = async (e) => {
+    if (e) e.preventDefault()
+    const limpia = nuevaCatTexto.trim()
+    if (!limpia) return
+
+    const existe = categorias.some((c) => c.toLowerCase() === limpia.toLowerCase())
+    if (existe) {
+      setErrorCat(`La categoría "${limpia}" ya se encuentra registrada.`)
+      return
+    }
+
+    const nuevaLista = [...categorias, limpia]
+    setGuardandoCat(true)
+    setErrorCat(null)
+
+    if (onGuardarCategorias) {
+      const err = await onGuardarCategorias(nuevaLista)
+      if (err) {
+        setErrorCat(err)
+      } else {
+        setNuevaCatTexto('')
+        // Si el formulario de equipo está abierto, seleccionarla automáticamente
+        if (modalAbierto) {
+          setForm((prev) => ({ ...prev, categoria: limpia }))
+        }
+      }
+    }
+    setGuardandoCat(false)
+  }
+
+  const eliminarCategoria = async (catEliminar) => {
+    const equiposConCat = inventario.filter(
+      (i) => (i.categoria || '').toLowerCase() === catEliminar.toLowerCase(),
+    )
+    if (equiposConCat.length > 0) {
+      const ok = window.confirm(
+        `Hay ${equiposConCat.length} equipo(s) con la categoría "${catEliminar}". Si la eliminas, esos equipos conservarán su valor pero la categoría ya no aparecerá como opción rápida. ¿Deseas eliminarla?`,
+      )
+      if (!ok) return
+    } else {
+      const ok = window.confirm(`¿Deseas eliminar la categoría "${catEliminar}"?`)
+      if (!ok) return
+    }
+
+    const nuevaLista = categorias.filter((c) => c !== catEliminar)
+    setGuardandoCat(true)
+    setErrorCat(null)
+    if (onGuardarCategorias) {
+      await onGuardarCategorias(nuevaLista)
+    }
+    setGuardandoCat(false)
   }
 
   const abrirEditar = (fila) => {
@@ -276,7 +346,7 @@ export default function InventarioModule({
 
       setMensajeImportacion({
         tipo: 'ok',
-        texto: `✓ Se importaron ${nuevosRegistros.length} equipo(s) con códigos generados automáticamente.`,
+        texto: `Se importaron ${nuevosRegistros.length} equipo(s) con códigos generados exitosamente.`,
       })
       onRecargar()
     } catch (err) {
@@ -325,7 +395,14 @@ export default function InventarioModule({
               : 'border-red-300 bg-red-50 text-red-700'
           }`}
         >
-          <span>{mensajeImportacion.texto}</span>
+          <div className="flex items-center gap-2">
+            {mensajeImportacion.tipo === 'ok' ? (
+              <CheckCircle2 size={16} className="shrink-0 text-emerald-600" />
+            ) : (
+              <TriangleAlert size={16} className="shrink-0 text-red-600" />
+            )}
+            <span>{mensajeImportacion.texto}</span>
+          </div>
           <button
             onClick={() => setMensajeImportacion(null)}
             className="rounded px-2 py-0.5 text-[11px] underline"
@@ -366,6 +443,16 @@ export default function InventarioModule({
 
             {permisos.puedeCrearEditarInventario && (
               <>
+                <button
+                  type="button"
+                  onClick={() => setModalCategoriasAbierto(true)}
+                  className="flex items-center gap-1.5 rounded border border-neutral-700 bg-neutral-900 px-2.5 py-1.5 text-xs font-bold text-neutral-200 hover:border-[#FF5500]"
+                  title="Gestionar categorías de equipos (crear, editar o eliminar)"
+                >
+                  <Tags size={13} color={NARANJA} />
+                  <span>Gestionar Categorías</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={descargarPlantillaInventarioExcel}
@@ -610,22 +697,42 @@ export default function InventarioModule({
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block font-bold uppercase text-neutral-600">
-                      Tipo / Categoría
-                    </label>
-                    <input
-                      list="lista-categorias-erp"
-                      value={form.categoria}
-                      onChange={(e) => setForm({ ...form, categoria: e.target.value })}
-                      placeholder="Andamios, Maquinaria, Puntales, Madera..."
-                      className="w-full rounded border border-neutral-300 px-3 py-2 placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
-                    />
-                    <datalist id="lista-categorias-erp">
-                      <option value="Andamios" />
-                      <option value="Maquinaria" />
-                      <option value="Puntales" />
-                      <option value="Madera" />
-                    </datalist>
+                    <div className="mb-1 flex items-center justify-between">
+                      <label className="block font-bold uppercase text-neutral-600">
+                        Tipo / Categoría *
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setModalCategoriasAbierto(true)}
+                        className="flex items-center gap-1 text-[11px] font-bold text-[#FF5500] hover:underline"
+                        title="Crear o gestionar categorías del sistema"
+                      >
+                        <Plus size={12} />
+                        <span>Nueva Categoría</span>
+                      </button>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <select
+                        required
+                        value={form.categoria}
+                        onChange={(e) => setForm({ ...form, categoria: e.target.value })}
+                        className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-xs font-bold text-neutral-800 outline-none focus:border-[#FF5500]"
+                      >
+                        {categorias.map((c) => (
+                          <option key={c} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setModalCategoriasAbierto(true)}
+                        className="rounded border border-neutral-300 bg-neutral-100 px-2.5 py-2 text-neutral-600 hover:border-[#FF5500] hover:bg-neutral-200"
+                        title="Gestionar lista de categorías"
+                      >
+                        <Tags size={14} color={NARANJA} />
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -781,6 +888,117 @@ export default function InventarioModule({
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+        {/* =================================================================
+            MODAL GESTOR DINÁMICO DE CATEGORÍAS
+           ================================================================= */}
+        {modalCategoriasAbierto && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-md overflow-hidden rounded-md border border-neutral-700 bg-white shadow-2xl">
+              <div
+                className="flex items-center justify-between px-5 py-3.5 text-white"
+                style={{ background: NEGRO, borderBottom: `3px solid ${NARANJA}` }}
+              >
+                <div className="flex items-center gap-2">
+                  <Tags size={17} color={NARANJA} />
+                  <h3 className="text-sm font-bold uppercase tracking-wider">
+                    Gestor Dinámico de Categorías
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setModalCategoriasAbierto(false)}
+                  className="text-neutral-400 hover:text-white"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-4 p-5 text-xs">
+                {errorCat && (
+                  <div className="flex items-center gap-2 rounded border border-red-300 bg-red-50 p-2.5 text-xs font-bold text-red-700">
+                    <TriangleAlert size={15} className="shrink-0" />
+                    <span>{errorCat}</span>
+                  </div>
+                )}
+
+                <p className="text-neutral-600">
+                  Las categorías permiten organizar el inventario en galpón, calcular la ocupación por rubro y generar automáticamente los códigos correlativos de tres letras (ej. AND-001, PUN-001).
+                </p>
+
+                {/* Formulario para agregar nueva categoría */}
+                <form onSubmit={agregarCategoria} className="flex gap-2">
+                  <input
+                    type="text"
+                    value={nuevaCatTexto}
+                    onChange={(e) => setNuevaCatTexto(e.target.value)}
+                    placeholder="Nombre de la nueva categoría (ej. Motores)"
+                    className="flex-1 rounded border border-neutral-300 px-3 py-2 text-xs font-bold outline-none focus:border-[#FF5500]"
+                  />
+                  <button
+                    type="submit"
+                    disabled={guardandoCat || !nuevaCatTexto.trim()}
+                    className="flex items-center gap-1.5 rounded px-4 py-2 text-xs font-bold text-white transition-opacity hover:opacity-95 disabled:opacity-50"
+                    style={{ background: NARANJA }}
+                  >
+                    {guardandoCat ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
+                    <span>Agregar</span>
+                  </button>
+                </form>
+
+                {/* Lista de categorías activas */}
+                <div className="space-y-1.5">
+                  <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-500">
+                    Categorías Registradas ({categorias.length})
+                  </label>
+                  <div className="max-h-60 divide-y divide-neutral-200 overflow-y-auto rounded border border-neutral-300 bg-neutral-50">
+                    {categorias.map((cat) => {
+                      const cantEquipos = inventario.filter(
+                        (i) => (i.categoria || '').toLowerCase() === cat.toLowerCase(),
+                      ).length
+
+                      return (
+                        <div
+                          key={cat}
+                          className="flex items-center justify-between gap-2 bg-white px-3.5 py-2.5 transition-colors hover:bg-neutral-50"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="h-2 w-2 rounded-full"
+                              style={{ backgroundColor: NARANJA }}
+                            />
+                            <span className="font-bold text-neutral-800">{cat}</span>
+                            <span className="rounded bg-neutral-100 px-1.5 py-0.5 font-mono text-[10px] text-neutral-500">
+                              {cantEquipos} equipo(s)
+                            </span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => eliminarCategoria(cat)}
+                            disabled={guardandoCat}
+                            className="rounded p-1 text-neutral-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                            title={`Eliminar categoría ${cat}`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setModalCategoriasAbierto(false)}
+                    className="rounded border border-neutral-300 px-4 py-2 text-xs font-bold text-neutral-700 hover:bg-neutral-100"
+                  >
+                    Cerrar
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}

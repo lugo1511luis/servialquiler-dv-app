@@ -17,6 +17,54 @@ export const METODOS_PAGO_DEFAULT = [
   'Mixto (USD + Bs.)',
 ]
 
+export const CATEGORIAS_INVENTARIO_DEFAULT = [
+  'Andamios',
+  'Puntales',
+  'Tablas',
+  'Mezcladoras',
+  'Herramientas',
+  'Maquinaria',
+]
+
+export const obtenerCategoriasInventario = (config, inventario = []) => {
+  const raw = config?.categorias_inventario
+  let lista = []
+  if (Array.isArray(raw)) {
+    lista = raw
+      .map((item) => {
+        if (typeof item === 'string') return item.trim()
+        if (item && typeof item === 'object') {
+          if (item.activo === false) return null
+          return String(item.nombre || item.categoria || '').trim()
+        }
+        return ''
+      })
+      .filter(Boolean)
+  } else if (typeof raw === 'string' && raw.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        lista = parsed.map((x) => String(x?.nombre ?? x ?? '').trim()).filter(Boolean)
+      }
+    } catch {
+      // Ignorar JSON inválido
+    }
+  }
+
+  const base = lista.length > 0 ? lista : CATEGORIAS_INVENTARIO_DEFAULT
+  const conjunto = new Set(base)
+
+  if (Array.isArray(inventario)) {
+    inventario.forEach((i) => {
+      if (i?.categoria && typeof i.categoria === 'string' && i.categoria.trim()) {
+        conjunto.add(i.categoria.trim())
+      }
+    })
+  }
+
+  return Array.from(conjunto)
+}
+
 export const obtenerMetodosPago = (config) => {
   const raw = config?.metodos_pago
   let lista = []
@@ -306,3 +354,75 @@ export const cargarLogoBase64 = async () => {
     return null
   }
 }
+
+// Formatea teléfonos a formato estándar internacional para WhatsApp (58 para Venezuela)
+export const formatearTelefonoWhatsApp = (tel) => {
+  if (!tel) return ''
+  const soloDigitos = String(tel).replace(/[^0-9]/g, '')
+  if (!soloDigitos) return ''
+  // Si empieza por 0 (ej. 04141234567, 0412...), remover el 0 y anteponer código 58
+  if (soloDigitos.startsWith('0')) {
+    return `58${soloDigitos.slice(1)}`
+  }
+  // Si tiene 10 dígitos y empieza por 4 (ej. 4141234567), anteponer código 58
+  if (soloDigitos.length === 10 && soloDigitos.startsWith('4')) {
+    return `58${soloDigitos}`
+  }
+  return soloDigitos
+}
+
+// Redacta el mensaje profesional de notificación de contrato para WhatsApp
+export const construirMensajeWhatsAppContrato = ({ contrato, cliente, tasa }) => {
+  const nombreCliente =
+    cliente?.nombre_razon_social || contrato?.cliente_nombre || 'Estimado(a) Cliente'
+  const codigo =
+    contrato?.codigo_contrato || contrato?.numero_contrato || `CT-${contrato?.id}`
+  const vencimiento = fmtFecha(contrato?.fecha_vencimiento)
+
+  let items = []
+  if (Array.isArray(contrato?.items)) {
+    items = contrato.items
+  } else if (typeof contrato?.items === 'string') {
+    try {
+      items = JSON.parse(contrato.items)
+    } catch {
+      items = []
+    }
+  }
+
+  const resumenEquipos =
+    items.length > 0
+      ? items
+          .map((it) => `• ${num(it.cantidad) || 1} und. de ${it.material || it.nombre || 'Equipo'}`)
+          .join('\n')
+      : '• Equipos en obra'
+
+  const saldoPendiente = num(contrato?.saldo_pendiente_usd)
+  let lineaSaldo = ''
+  if (saldoPendiente > 0.009) {
+    const enBs = tasa ? ` (aprox. ${fmtVES(saldoPendiente * tasa)} a la Tasa del Día)` : ''
+    lineaSaldo = `\n💰 Saldo pendiente por liquidar: ${fmtUSD(saldoPendiente)}${enBs}\n`
+  } else {
+    lineaSaldo = '\n✅ Estado de pago: Factura totalmente pagada al día\n'
+  }
+
+  const mensaje = `*SERVIALQUILER DV, C.A.*
+*Control de Alquiler y Despacho de Equipos*
+
+Estimado(a) *${nombreCliente}*, le compartimos el resumen de su contrato activo:
+
+*Contrato:* ${codigo}
+*Fecha límite de devolución:* ${vencimiento}
+
+*Equipos despachados en obra:*
+${resumenEquipos}
+${lineaSaldo}
+Para renovaciones, extensiones de días, devoluciones a galpón o reportes de pago, por favor responda a este mensaje.
+
+_¡Gracias por confiar en ServiAlquiler DV, C.A.!_`
+
+  return encodeURIComponent(mensaje)
+}
+
+// Icono SVG profesional de WhatsApp
+export { default as WhatsAppIcon } from '../components/WhatsAppIcon'

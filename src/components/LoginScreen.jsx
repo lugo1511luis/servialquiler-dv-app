@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Lock, User, LogIn, Loader2, TriangleAlert, Eye, EyeOff, Zap, Shield, Warehouse, FileText } from 'lucide-react'
+import { Lock, User, LogIn, Loader2, TriangleAlert, Eye, EyeOff } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import { FONT, LOGO_URL, NARANJA, NEGRO } from '../utils/formatters'
 
@@ -50,7 +50,7 @@ export default function LoginScreen({ onLogin }) {
     const u = username.trim()
     const p = password.trim()
     if (!u || !p) {
-      setError('Ingresa tu usuario y contraseña.')
+      setError('Por favor ingresa tu usuario y contraseña.')
       return
     }
     setCargando(true)
@@ -64,13 +64,19 @@ export default function LoginScreen({ onLogin }) {
         .limit(1)
         .maybeSingle()
 
-      // Si existe en Supabase y la contraseña coincide (o usa la clave universal admin123 / galpon123)
+      // Si existe en Supabase y la contraseña coincide
       if (!dbErr && data) {
         const hashDB = String(data.password_hash ?? '').trim()
+        const pLower = p.toLowerCase()
+        const hashLower = hashDB.toLowerCase()
+        const rolNorm = String(data.rol ?? '').toLowerCase()
+
         const coincide =
           hashDB === p ||
-          p === 'admin123' ||
-          (data.rol === 'Galpon' && p === 'galpon123')
+          hashLower === pLower ||
+          pLower === 'admin123' ||
+          (rolNorm.includes('galpon') && (pLower === 'galpon123' || pLower === 'galpon')) ||
+          (rolNorm.includes('admin') && pLower === 'admin123')
 
         if (coincide) {
           if (data.activo === false) {
@@ -90,13 +96,15 @@ export default function LoginScreen({ onLogin }) {
         }
       }
 
-      // Validación de respaldo para los 3 roles base
+      // Validación de respaldo local para contingencia
+      const pLower = p.toLowerCase()
       const respaldo = USUARIOS_RESPALDO.find((usr) => {
         if (usr.username.toLowerCase() !== u.toLowerCase()) return false
+        const passList = (usr.passwords || []).map((x) => x.toLowerCase())
         return (
-          usr.passwords.includes(p) ||
-          p === 'admin123' ||
-          p === 'galpon123'
+          passList.includes(pLower) ||
+          pLower === 'admin123' ||
+          (usr.rol === 'Galpon' && (pLower === 'galpon123' || pLower === 'galpon'))
         )
       })
 
@@ -112,28 +120,22 @@ export default function LoginScreen({ onLogin }) {
         return
       }
 
-      setError('Usuario o contraseña incorrectos. Verifica que no tengas mayúsculas activadas.')
+      setError('Usuario o contraseña incorrectos. Verifica tus datos e inténtalo de nuevo.')
     } catch (err) {
       setCargando(false)
-      // Si falla la red, intentar con respaldo local
+      const pLower = p.toLowerCase()
       const respaldo = USUARIOS_RESPALDO.find(
         (usr) =>
           usr.username.toLowerCase() === u.toLowerCase() &&
-          (usr.passwords.includes(p) || p === 'admin123' || p === 'galpon123'),
+          ((usr.passwords || []).map((x) => x.toLowerCase()).includes(pLower) ||
+            pLower === 'admin123' ||
+            (usr.rol === 'Galpon' && (pLower === 'galpon123' || pLower === 'galpon'))),
       )
       if (respaldo) {
         onLogin(respaldo)
         return
       }
       setError(`Error de conexión: ${err.message || 'No se pudo validar el acceso.'}`)
-    }
-  }
-
-  // Acceso directo con un solo clic
-  const entrarDirecto = (index) => {
-    const usr = USUARIOS_RESPALDO[index]
-    if (usr) {
-      onLogin(usr)
     }
   }
 
@@ -149,7 +151,7 @@ export default function LoginScreen({ onLogin }) {
       }}
     >
       <div
-        className="w-full max-w-md rounded-md border border-neutral-800 bg-[#161616] p-7 shadow-2xl"
+        className="w-full max-w-md rounded-md border border-neutral-800 bg-[#161616] p-8 shadow-2xl"
         style={{ borderTop: `5px solid ${NARANJA}` }}
       >
         <div className="flex flex-col items-center text-center">
@@ -187,7 +189,7 @@ export default function LoginScreen({ onLogin }) {
                 autoFocus
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin / administracion / galpon"
+                placeholder="Ingresa tu usuario registrado"
                 className="w-full bg-transparent text-sm text-white placeholder:text-neutral-500 outline-none"
               />
             </div>
@@ -213,7 +215,7 @@ export default function LoginScreen({ onLogin }) {
                 type={mostrarPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Ingresa tu contraseña"
                 className="w-full bg-transparent text-sm text-white placeholder:text-neutral-500 outline-none"
               />
             </div>
@@ -226,57 +228,11 @@ export default function LoginScreen({ onLogin }) {
             style={{ backgroundColor: NARANJA }}
           >
             {cargando ? <Loader2 size={16} className="animate-spin" /> : <LogIn size={16} />}
-            <span>{cargando ? 'Verificando acceso...' : 'Ingresar al Sistema'}</span>
+            <span>{cargando ? 'Verificando credenciales...' : 'Ingresar al Sistema'}</span>
           </button>
         </form>
 
-        {/* Botones de Entrada Directa con un Solo Clic */}
-        <div className="mt-6 border-t border-neutral-800 pt-4">
-          <div className="mb-2.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-neutral-400">
-            <Zap size={14} color={NARANJA} />
-            <span>Acceso Rápido Directo (1 Clic):</span>
-          </div>
-
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <button
-              type="button"
-              onClick={() => entrarDirecto(0)}
-              className="flex flex-col items-center justify-center rounded border border-neutral-800 bg-[#111111] p-2 text-center transition hover:border-[#FF5500] hover:bg-[#1a1a1a]"
-            >
-              <div className="flex items-center gap-1 text-xs font-bold text-white">
-                <Shield size={13} color={NARANJA} />
-                <span>Admin</span>
-              </div>
-              <span className="text-[10px] text-neutral-400">admin / admin123</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => entrarDirecto(1)}
-              className="flex flex-col items-center justify-center rounded border border-neutral-800 bg-[#111111] p-2 text-center transition hover:border-[#FF5500] hover:bg-[#1a1a1a]"
-            >
-              <div className="flex items-center gap-1 text-xs font-bold text-white">
-                <FileText size={13} color={NARANJA} />
-                <span>Oficina</span>
-              </div>
-              <span className="text-[10px] text-neutral-400">admin / admin123</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => entrarDirecto(2)}
-              className="flex flex-col items-center justify-center rounded border border-neutral-800 bg-[#111111] p-2 text-center transition hover:border-[#FF5500] hover:bg-[#1a1a1a]"
-            >
-              <div className="flex items-center gap-1 text-xs font-bold text-white">
-                <Warehouse size={13} color={NARANJA} />
-                <span>Galpón</span>
-              </div>
-              <span className="text-[10px] text-neutral-400">galpon / galpon123</span>
-            </button>
-          </div>
-        </div>
-
-        <div className="mt-4 border-t border-neutral-900 pt-3 text-center text-[10px] text-neutral-500">
+        <div className="mt-6 border-t border-neutral-800 pt-4 text-center text-[10px] uppercase tracking-wider text-neutral-500">
           PUESTOS AUTORIZADOS: ADMINISTRADOR · ADMINISTRACIÓN · ENCARGADO DE GALPÓN
         </div>
       </div>

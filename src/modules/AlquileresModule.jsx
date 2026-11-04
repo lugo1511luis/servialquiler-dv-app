@@ -17,15 +17,19 @@ import {
   CheckCircle2,
   Banknote,
   PackageCheck,
+  CreditCard,
+  Check,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import {
+  construirMensajeWhatsAppContrato,
   diasEntreFechas,
   diasEntreHoyY,
   fmtFecha,
   fmtNum,
   fmtUSD,
   fmtVES,
+  formatearTelefonoWhatsApp,
   hoyISO,
   limpiarInputDecimal,
   limpiarInputEntero,
@@ -34,6 +38,7 @@ import {
   NEGRO,
   num,
   sumarDiasISO,
+  WhatsAppIcon,
 } from '../utils/formatters'
 import { generarFacturaContratoPDF } from '../utils/exportadores'
 import { registrarMovimientoKardex } from '../utils/kardex'
@@ -1031,6 +1036,39 @@ export default function AlquileresModule({
     onRecargarTodo()
   }
 
+  // ---- Envío Directo por WhatsApp con 1 Clic --------------------------------
+  const enviarWhatsAppContrato = (c, cli, datosPago) => {
+    let tel = cli?.telefono || c?.cliente_telefono || ''
+    let telFormateado = formatearTelefonoWhatsApp(tel)
+
+    if (!telFormateado) {
+      const pedido = window.prompt(
+        `El cliente "${cli?.nombre_razon_social || c.cliente_nombre || 'de Obra'}" no tiene un teléfono guardado. Ingresa el número de WhatsApp (ej. 04141234567):`,
+      )
+      if (!pedido) return
+      telFormateado = formatearTelefonoWhatsApp(pedido)
+      if (!telFormateado) {
+        window.alert('Número de teléfono inválido.')
+        return
+      }
+    }
+
+    const items = obtenerItemsConRespaldo(c)
+    const textoCodificado = construirMensajeWhatsAppContrato({
+      contrato: {
+        ...c,
+        monto_pagado_usd: datosPago.pagado,
+        saldo_pendiente_usd: datosPago.restante,
+        items,
+      },
+      cliente: cli,
+      tasa,
+    })
+
+    const url = `https://wa.me/${telFormateado}?text=${textoCodificado}`
+    window.open(url, '_blank')
+  }
+
   const filtrados = useMemo(() => {
     void versionRespaldo
     const q = busqueda.trim().toLowerCase()
@@ -1051,8 +1089,9 @@ export default function AlquileresModule({
   const tipsAlquileres = [
     'Pulsa "+ Nuevo Despacho" para abrir el facturador. Todos los campos de montos inician limpios para que escribas directo.',
     'Abonos directos: Al crear un contrato puedes anotar cuántos dólares abonó el cliente hoy y el sistema calcula el Restante por Cobrar.',
-    '💵 Registrar Abono: Si un cliente dejó saldo pendiente, usa este botón para registrar pagos parciales o el pago final.',
-    '📅 Postergar Días: Extiende los días de alquiler, suma el monto extra al contrato y refleja todo en la Nota de Entrega PDF.',
+    'Registrar Abono: Si un cliente dejó saldo pendiente, usa este botón para registrar pagos parciales o el pago final.',
+    'Postergar Días: Extiende los días de alquiler, suma el monto extra al contrato y refleja todo en la Nota de Entrega PDF.',
+    'Notificar por WhatsApp: Envía con 1 clic el resumen del contrato, equipos y saldo pendiente al teléfono del cliente.',
   ]
 
   const th =
@@ -1300,7 +1339,7 @@ export default function AlquileresModule({
                         <TriangleAlert size={18} className="mt-0.5 shrink-0 text-red-600" />
                         <div>
                           <p className="font-bold text-red-800">
-                            ⚠️ Atención: Este cliente registra un saldo pendiente actual de USD {fmtUSD(deuda)}
+                            Atención: Este cliente registra un saldo pendiente actual de USD {fmtUSD(deuda)}
                             {tasa ? ` (${fmtVES(deuda * tasa)} a la Tasa del Día)` : ''}.
                           </p>
                           <p className="mt-0.5 text-[11px] text-red-700">
@@ -1562,8 +1601,9 @@ export default function AlquileresModule({
                           ))}
                         </select>
                       ) : (
-                        <div className="rounded border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-800">
-                          💳 Pago Mixto (Desglosado abajo)
+                        <div className="flex items-center gap-1.5 rounded border border-amber-300 bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-800">
+                          <CreditCard size={14} color={NARANJA} />
+                          <span>Pago Mixto (Desglosado abajo)</span>
                         </div>
                       )}
                     </div>
@@ -1587,7 +1627,8 @@ export default function AlquileresModule({
                         }}
                         className="h-4 w-4 accent-[#FF5500]"
                       />
-                      <span>💳 Habilitar Pago Mixto (Dividir en dos métodos)</span>
+                      <CreditCard size={14} color={NARANJA} />
+                      <span>Habilitar Pago Mixto (Dividir en dos métodos)</span>
                     </label>
 
                     {pagoMixto && (
@@ -1698,8 +1739,8 @@ export default function AlquileresModule({
                                 Number(montoMetodo2Usd || 0) -
                                 abonoHoyNum,
                             ) < 0.01
-                              ? '✓ Cuadra con el abono hoy'
-                              : `⚠️ Diferencia: ${fmtUSD(Math.abs(Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0) - abonoHoyNum))}`}
+                              ? 'Cuadra exacto con el abono de hoy'
+                              : `Diferencia: ${fmtUSD(Math.abs(Number(montoMetodo1Usd || 0) + Number(montoMetodo2Usd || 0) - abonoHoyNum))}`}
                           </span>
                         </div>
                       </div>
@@ -2052,7 +2093,7 @@ export default function AlquileresModule({
                               title="Registrar un abono o pago del cliente para descontar de su deuda pendiente"
                             >
                               <Banknote size={13} />
-                              <span>💵 Registrar Abono</span>
+                              <span>Registrar Abono</span>
                             </button>
                           )}
 
@@ -2072,7 +2113,7 @@ export default function AlquileresModule({
                                 title="Extender los días de alquiler, recalcular cobro y actualizar fecha de vencimiento"
                               >
                                 <CalendarPlus size={13} />
-                                <span>📅 Postergar Días</span>
+                                <span>Postergar Días</span>
                               </button>
 
                               <button
@@ -2082,7 +2123,7 @@ export default function AlquileresModule({
                                 title="Registrar devolución parcial de equipos y recalcular cobro por días reales de uso"
                               >
                                 <PackageCheck size={13} />
-                                <span>📦 Devolución Parcial</span>
+                                <span>Devolución Parcial</span>
                               </button>
 
                               <button
@@ -2096,6 +2137,17 @@ export default function AlquileresModule({
                               </button>
                             </>
                           )}
+
+                          {/* Notificación directa por WhatsApp */}
+                          <button
+                            type="button"
+                            onClick={() => enviarWhatsAppContrato(c, cli, datosPago)}
+                            className="flex items-center gap-1 rounded border border-emerald-500 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100"
+                            title="Enviar resumen del contrato por WhatsApp al cliente con 1 clic"
+                          >
+                            <WhatsAppIcon size={13} className="text-emerald-600" />
+                            <span>WhatsApp</span>
+                          </button>
 
                           <button
                             onClick={() =>
@@ -2129,7 +2181,7 @@ export default function AlquileresModule({
         )}
 
         {/* =================================================================
-            MODAL 1: REGISTRAR ABONO (💵 Registrar Abono)
+            MODAL 1: REGISTRAR ABONO (Registrar Abono)
            ================================================================= */}
         {modalAbono && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
@@ -2141,7 +2193,7 @@ export default function AlquileresModule({
                 <div className="flex items-center gap-2">
                   <Banknote size={17} color={NARANJA} />
                   <h3 className="text-sm font-bold uppercase tracking-wider">
-                    💵 Registrar Abono de Contrato
+                    Registrar Abono de Contrato
                   </h3>
                 </div>
                 <button
@@ -2230,7 +2282,8 @@ export default function AlquileresModule({
                             }}
                             className="h-4 w-4 accent-[#FF5500]"
                           />
-                          <span>💳 Habilitar Pago Mixto (Dividir en dos métodos)</span>
+                          <CreditCard size={15} color={NARANJA} />
+                          <span>Habilitar Pago Mixto (Dividir en dos métodos)</span>
                         </label>
 
                         {!pagoMixtoAbono ? (
@@ -2357,9 +2410,26 @@ export default function AlquileresModule({
                                   Number(montoMetodoAbono1Usd || 0) +
                                     Number(montoMetodoAbono2Usd || 0) -
                                     abonoNum,
-                                ) < 0.01
-                                  ? '✓ Cuadra con el abono hoy'
-                                  : `⚠️ Diferencia: ${fmtUSD(Math.abs(Number(montoMetodoAbono1Usd || 0) + Number(montoMetodoAbono2Usd || 0) - abonoNum))}`}
+                                ) < 0.01 ? (
+                                  <span className="flex items-center gap-1">
+                                    <Check size={14} className="text-emerald-700" />
+                                    <span>Cuadra con el abono hoy</span>
+                                  </span>
+                                ) : (
+                                  <span className="flex items-center gap-1">
+                                    <TriangleAlert size={14} className="text-red-600" />
+                                    <span>
+                                      Diferencia:{' '}
+                                      {fmtUSD(
+                                        Math.abs(
+                                          Number(montoMetodoAbono1Usd || 0) +
+                                            Number(montoMetodoAbono2Usd || 0) -
+                                            abonoNum,
+                                        ),
+                                      )}
+                                    </span>
+                                  </span>
+                                )}
                               </span>
                             </div>
                           </div>
@@ -2403,7 +2473,7 @@ export default function AlquileresModule({
         )}
 
         {/* =================================================================
-            MODAL 2: POSTERGAR / EXTENDER DÍAS DE ALQUILER (📅 Postergar Días)
+            MODAL 2: POSTERGAR / EXTENDER DÍAS DE ALQUILER (Postergar Días)
            ================================================================= */}
         {modalProrroga && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
@@ -2415,7 +2485,7 @@ export default function AlquileresModule({
                 <div className="flex items-center gap-2">
                   <CalendarPlus size={17} color={NARANJA} />
                   <h3 className="text-sm font-bold uppercase tracking-wider">
-                    📅 Postergar / Extender Días de Alquiler
+                    Postergar / Extender Días de Alquiler
                   </h3>
                 </div>
                 <button
@@ -2555,7 +2625,7 @@ export default function AlquileresModule({
                 <div className="flex items-center gap-2">
                   <PackageCheck size={18} color={NARANJA} />
                   <h3 className="text-sm font-bold uppercase tracking-wider">
-                    📦 Recepción de Devolución Parcial
+                    Recepción de Devolución Parcial
                   </h3>
                 </div>
                 <button

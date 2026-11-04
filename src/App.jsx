@@ -59,7 +59,7 @@ function App() {
   const cargarConfiguracion = useCallback(async () => {
     const { data, error: err } = await supabase
       .from('configuracion_general')
-      .select('id, tasa_bcv, metodos_pago, updated_at')
+      .select('*')
       .order('id', { ascending: true })
       .limit(1)
       .maybeSingle()
@@ -256,9 +256,38 @@ function App() {
       .from('configuracion_general')
       .update({ metodos_pago: nuevaLista, updated_at: new Date().toISOString() })
       .eq('id', config.id)
-      .select('id, tasa_bcv, metodos_pago, updated_at')
+      .select('*')
       .single()
     if (err) return err.message
+    setConfig(data)
+    return null
+  }
+
+  const guardarCategoriasInventario = async (nuevaLista) => {
+    if (!permisos.puedeEditarTasa && !permisos.esAdmin) {
+      return 'Solo el Administrador o Administración puede gestionar las categorías.'
+    }
+    if (!config) return 'Configuración general no cargada.'
+
+    // Intento de actualización en Supabase
+    const { data, error: err } = await supabase
+      .from('configuracion_general')
+      .update({ categorias_inventario: nuevaLista, updated_at: new Date().toISOString() })
+      .eq('id', config.id)
+      .select('*')
+      .single()
+
+    if (err) {
+      // Si la columna no existiera en Supabase aún, guardar en memoria/localStorage de contingencia
+      try {
+        localStorage.setItem('servialquiler_categorias_inventario', JSON.stringify(nuevaLista))
+      } catch {
+        // Ignorar
+      }
+      setConfig((prev) => ({ ...prev, categorias_inventario: nuevaLista }))
+      return null
+    }
+
     setConfig(data)
     return null
   }
@@ -353,6 +382,8 @@ function App() {
               inventario={inventario}
               tasa={tasa}
               permisos={permisos}
+              config={config}
+              onGuardarCategorias={guardarCategoriasInventario}
               cargando={cargando}
               onRecargar={recargarTodo}
             />

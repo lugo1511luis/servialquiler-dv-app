@@ -14,6 +14,7 @@ import {
   ArrowRight,
   RotateCcw,
   X,
+  CheckCircle2,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import {
@@ -205,7 +206,7 @@ export default function TerminalGalpon({
 
     setProcesandoId(null)
     setMensajeExito(
-      `✓ Pedido ${refContrato} (${nombreCliente}) marcado como CARGADO Y DESPACHADO.`,
+      `Pedido ${refContrato} (${nombreCliente}) marcado como CARGADO Y DESPACHADO.`,
     )
   }
 
@@ -290,7 +291,7 @@ export default function TerminalGalpon({
 
     setProcesandoId(null)
     setMensajeExito(
-      `✓ Equipos del contrato ${refContrato} (${nombreCliente}) recibidos y sumados nuevamente al stock disponible en galpón.`,
+      `Equipos del contrato ${refContrato} (${nombreCliente}) recibidos y sumados nuevamente al stock disponible en galpón.`,
     )
   }
 
@@ -503,7 +504,7 @@ export default function TerminalGalpon({
     setProcesandoId(null)
     setModalDevolucionParcial(null)
     setMensajeExito(
-      `✓ Entrada parcial registrada para ${refContrato} (${nombreCliente}). Stock disponible actualizado en galpón.`,
+      `Entrada parcial registrada para ${refContrato} (${nombreCliente}). Stock disponible actualizado en galpón.`,
     )
   }
 
@@ -657,10 +658,13 @@ export default function TerminalGalpon({
 
         {mensajeExito && (
           <div className="flex items-center justify-between gap-2.5 rounded-md border border-emerald-500 bg-emerald-950/60 p-3.5 text-sm font-bold text-emerald-200">
-            <span>{mensajeExito}</span>
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={18} className="shrink-0 text-emerald-400" />
+              <span>{mensajeExito}</span>
+            </div>
             <button
               onClick={() => setMensajeExito(null)}
-              className="rounded bg-emerald-900/60 px-2.5 py-1 text-xs text-emerald-100"
+              className="rounded bg-emerald-900/60 px-2.5 py-1 text-xs text-emerald-100 hover:bg-emerald-800"
             >
               OK
             </button>
@@ -849,7 +853,7 @@ export default function TerminalGalpon({
                         ) : (
                           <ArrowRight size={18} />
                         )}
-                        <span>✓ Marcar como Cargado y Despachado</span>
+                        <span>Marcar como Cargado y Despachado</span>
                       </button>
                     </article>
                   )
@@ -1025,7 +1029,7 @@ export default function TerminalGalpon({
                           className="flex items-center justify-center gap-2 rounded-md border border-purple-500 bg-purple-950/40 py-3 text-xs font-bold uppercase tracking-wider text-purple-300 transition-colors hover:bg-purple-900/60 active:scale-[0.99] disabled:opacity-50"
                         >
                           <PackageCheck size={16} />
-                          <span>📦 Devolución Parcial</span>
+                          <span>Devolución Parcial</span>
                         </button>
 
                         <button
@@ -1039,7 +1043,7 @@ export default function TerminalGalpon({
                           ) : (
                             <RotateCcw size={16} />
                           )}
-                          <span>✓ Todo Devuelto</span>
+                          <span>Todo Devuelto</span>
                         </button>
                       </div>
                     </article>
@@ -1064,7 +1068,7 @@ export default function TerminalGalpon({
               <div className="flex items-center gap-2">
                 <PackageCheck size={18} color={NARANJA} />
                 <h3 className="text-sm font-bold uppercase tracking-wider">
-                  📦 Recepción de Devolución Parcial en Galpón
+                  Recepción de Devolución Parcial en Galpón
                 </h3>
               </div>
               <button
@@ -1211,7 +1215,7 @@ export default function TerminalGalpon({
                   style={{ background: NARANJA }}
                 >
                   {procesandoId && <Loader2 size={14} className="animate-spin" />}
-                  <span>✓ Confirmar Entrada a Galpón</span>
+                  <span>Confirmar Entrada a Galpón</span>
                 </button>
               </div>
             </form>

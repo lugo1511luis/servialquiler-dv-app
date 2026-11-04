@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import * as XLSX from 'xlsx'
 import {
   Plus,
   Pencil,
@@ -9,6 +10,9 @@ import {
   TriangleAlert,
   Phone,
   MapPin,
+  FileSpreadsheet,
+  Upload,
+  CheckCircle2,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import {
@@ -19,6 +23,7 @@ import {
   NEGRO,
   num,
 } from '../utils/formatters'
+import { descargarPlantillaClientesExcel } from '../utils/exportadores'
 import GuiaRapida from '../components/GuiaRapida'
 
 const FORM_INICIAL = {
@@ -41,6 +46,11 @@ export default function ClientesModule({
   const [form, setForm] = useState(FORM_INICIAL)
   const [guardando, setGuardando] = useState(false)
   const [errorModal, setErrorModal] = useState(null)
+
+  // Estados de Importación Masiva Excel
+  const [importando, setImportando] = useState(false)
+  const [mensajeImportacion, setMensajeImportacion] = useState(null)
+  const inputArchivoRef = useRef(null)
 
   const filtrados = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
@@ -120,8 +130,164 @@ export default function ClientesModule({
     onRecargar()
   }
 
+  // ---- Importación Masiva desde Excel -------------------------------------
+  const manejarImportacionExcel = async (e) => {
+    const archivo = e.target.files?.[0]
+    if (!archivo) return
+
+    setImportando(true)
+    setMensajeImportacion(null)
+
+    try {
+      const buffer = await archivo.arrayBuffer()
+      const libro = XLSX.read(buffer, { type: 'array' })
+      const nombreHoja = libro.SheetNames[0]
+      const hoja = libro.Sheets[nombreHoja]
+      const filas = XLSX.utils.sheet_to_json(hoja, { defval: '' })
+
+      if (!Array.isArray(filas) || filas.length === 0) {
+        setImportando(false)
+        setMensajeImportacion({
+          tipo: 'error',
+          texto: 'El archivo Excel seleccionado está vacío o no contiene filas de datos.',
+        })
+        if (inputArchivoRef.current) inputArchivoRef.current.value = ''
+        return
+      }
+
+      // Normalizar y validar registros
+      const registrosValidos = []
+      const omitidos = []
+
+      filas.forEach((f, idx) => {
+        const rif = String(
+          f.rif_cedula ?? f.RIF_CEDULA ?? f.rif ?? f.RIF ?? f['RIF / Cédula'] ?? f['RIF / Cedula'] ?? '',
+        ).trim()
+        const nombre = String(
+          f.nombre_razon_social ??
+            f.NOMBRE_RAZON_SOCIAL ??
+            f.nombre ??
+            f.NOMBRE ??
+            f['Nombre / Razón Social'] ??
+            f['Nombre / Razon Social'] ??
+            f.cliente ??
+            '',
+        ).trim()
+        const tel = String(f.telefono ?? f.TELEFONO ?? f['Teléfono'] ?? f.Telefono ?? '').trim()
+        const dir = String(
+          f.direccion_obra ??
+            f.DIRECCION_OBRA ??
+            f.direccion ??
+            f['Dirección de Obra'] ??
+            f['Dirección'] ??
+            '',
+        ).trim()
+        const cor = String(f.correo ?? f.CORREO ?? f.email ?? f.EMAIL ?? '').trim()
+        const saldoRaw = f.saldo_pendiente_usd ?? f.saldo ?? f.SALDO ?? 0
+        const saldo = num(saldoRaw)
+
+        if (!rif || !nombre) {
+          omitidos.push(`Fila #${idx + 2}`)
+          return
+        }
+
+        registrosValidos.push({
+          rif_cedula: rif,
+          nombre_razon_social: nombre,
+          telefono: tel,
+          direccion_obra: dir,
+          correo: cor,
+          saldo_pendiente_usd: isNaN(saldo) ? 0 : Math.max(0, saldo),
+        })
+      })
+
+      if (registrosValidos.length === 0) {
+        setImportando(false)
+        setMensajeImportacion({
+          tipo: 'error',
+          texto: 'No se encontraron clientes válidos. Verifica que el archivo contenga las columnas "nombre_razon_social" y "rif_cedula".',
+        })
+        if (inputArchivoRef.current) inputArchivoRef.current.value = ''
+        return
+      }
+
+      // Obtener clientes actuales para comparar por RIF
+      const { data: clientesActuales, error: errFetch } = await supabase
+        .from('clientes')
+        .select('id, rif_cedula')
+
+      const mapaExistentes = new Map()
+      if (!errFetch && Array.isArray(clientesActuales)) {
+        clientesActuales.forEach((c) => {
+          if (c.rif_cedula) {
+            mapaExistentes.set(c.rif_cedula.trim().toUpperCase(), c.id)
+          }
+        })
+      }
+
+      let creados = 0
+      let actualizados = 0
+
+      for (const reg of registrosValidos) {
+        const key = reg.rif_cedula.toUpperCase()
+        const idExistente = mapaExistentes.get(key)
+
+        const datosConCorreo = {
+          rif_cedula: reg.rif_cedula,
+          nombre_razon_social: reg.nombre_razon_social,
+          telefono: reg.telefono,
+          direccion_obra: reg.direccion_obra,
+          correo: reg.correo,
+          saldo_pendiente_usd: reg.saldo_pendiente_usd,
+        }
+        const datosSinCorreo = {
+          rif_cedula: reg.rif_cedula,
+          nombre_razon_social: reg.nombre_razon_social,
+          telefono: reg.telefono,
+          direccion_obra: reg.direccion_obra,
+          saldo_pendiente_usd: reg.saldo_pendiente_usd,
+        }
+
+        if (idExistente) {
+          let res = await supabase.from('clientes').update(datosConCorreo).eq('id', idExistente)
+          if (res.error && res.error.message?.toLowerCase().includes('correo')) {
+            res = await supabase.from('clientes').update(datosSinCorreo).eq('id', idExistente)
+          }
+          if (!res.error) actualizados++
+        } else {
+          let res = await supabase.from('clientes').insert([datosConCorreo])
+          if (res.error && res.error.message?.toLowerCase().includes('correo')) {
+            res = await supabase.from('clientes').insert([datosSinCorreo])
+          }
+          if (!res.error) {
+            creados++
+            mapaExistentes.set(key, true)
+          }
+        }
+      }
+
+      setImportando(false)
+      if (inputArchivoRef.current) inputArchivoRef.current.value = ''
+      setMensajeImportacion({
+        tipo: 'ok',
+        texto: `Importación completada: ${creados} nuevo(s) cliente(s) registrado(s) y ${actualizados} actualizado(s).${
+          omitidos.length > 0 ? ` (${omitidos.length} fila(s) omitida(s) por faltar RIF o Nombre)` : ''
+        }`,
+      })
+      onRecargar()
+    } catch (err) {
+      setImportando(false)
+      if (inputArchivoRef.current) inputArchivoRef.current.value = ''
+      setMensajeImportacion({
+        tipo: 'error',
+        texto: `Error al procesar el archivo Excel: ${err.message}`,
+      })
+    }
+  }
+
   const tipsClientes = [
     'Anota aquí los datos de tus clientes frecuentes: su RIF o cédula, teléfono para llamarlos y la dirección de la obra donde usan los equipos.',
+    'Puedes descargar la "Plantilla Excel", llenarla con los datos de tus clientes e importarlos masivamente con un solo clic.',
     'Al tenerlos guardados aquí, cuando vayas a despachar en Alquileres solo tienes que seleccionarlo en la lista.',
     'El saldo pendiente te avisa si el cliente tiene alguna cuenta sin pagar.',
   ]
@@ -134,6 +300,33 @@ export default function ClientesModule({
     <div className="space-y-4">
       {/* Guía Rápida */}
       <GuiaRapida moduloNombre="Cartera de Clientes" tips={tipsClientes} />
+
+      {/* Banner de resultado de importación */}
+      {mensajeImportacion && (
+        <div
+          className={`flex items-center justify-between gap-3 rounded-md border p-3 text-xs font-bold shadow-sm ${
+            mensajeImportacion.tipo === 'ok'
+              ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+              : 'border-red-300 bg-red-50 text-red-800'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {mensajeImportacion.tipo === 'ok' ? (
+              <CheckCircle2 size={16} className="shrink-0 text-emerald-600" />
+            ) : (
+              <TriangleAlert size={16} className="shrink-0 text-red-600" />
+            )}
+            <span>{mensajeImportacion.texto}</span>
+          </div>
+          <button
+            onClick={() => setMensajeImportacion(null)}
+            className="rounded p-1 text-neutral-500 hover:bg-neutral-200/60"
+            title="Cerrar notificación"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       <section
         className="overflow-hidden rounded-md border border-neutral-300 bg-white shadow-sm"
@@ -159,13 +352,47 @@ export default function ClientesModule({
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
                 placeholder="Buscar por RIF, nombre u obra..."
-                className="w-52 bg-transparent text-xs text-white outline-none"
+                className="w-48 bg-transparent text-xs text-white outline-none placeholder:text-neutral-500"
               />
             </div>
 
+            {/* Descargar Plantilla Excel */}
+            <button
+              type="button"
+              onClick={descargarPlantillaClientesExcel}
+              className="flex items-center gap-1.5 rounded border border-neutral-600 bg-[#222222] px-2.5 py-1.5 text-xs font-bold text-neutral-200 hover:border-neutral-400 hover:bg-[#2c2c2c]"
+              title="Descargar plantilla de Excel modelo para importar clientes"
+            >
+              <FileSpreadsheet size={14} color="#34D399" />
+              <span>Plantilla Excel</span>
+            </button>
+
+            {/* Input oculto e Importar Excel */}
+            <input
+              ref={inputArchivoRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={manejarImportacionExcel}
+              className="hidden"
+            />
+            <button
+              type="button"
+              disabled={importando}
+              onClick={() => inputArchivoRef.current?.click()}
+              className="flex items-center gap-1.5 rounded border border-amber-600/70 bg-amber-950/60 px-2.5 py-1.5 text-xs font-bold text-amber-200 hover:bg-amber-900/60 disabled:opacity-50"
+              title="Subir archivo Excel para cargar clientes masivamente"
+            >
+              {importando ? (
+                <Loader2 size={14} className="animate-spin text-amber-400" />
+              ) : (
+                <Upload size={14} className="text-amber-400" />
+              )}
+              <span>{importando ? 'Importando...' : 'Importar Excel'}</span>
+            </button>
+
             <button
               onClick={abrirNuevo}
-              className="flex items-center gap-1.5 rounded px-3.5 py-1.5 text-xs font-bold text-white shadow"
+              className="flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-bold text-white shadow hover:brightness-110"
               style={{ background: NARANJA }}
               title="Registrar un nuevo cliente en el sistema"
             >

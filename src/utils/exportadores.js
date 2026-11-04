@@ -84,6 +84,42 @@ export const descargarPlantillaInventarioExcel = () => {
   XLSX.writeFile(libro, 'Plantilla_Importar_Inventario_ServiAlquiler.xlsx')
 }
 
+// Plantilla descargable de Excel para Importación Masiva de Clientes
+export const descargarPlantillaClientesExcel = () => {
+  const columnas = [
+    'nombre_razon_social',
+    'rif_cedula',
+    'telefono',
+    'direccion_obra',
+    'correo',
+    'saldo_pendiente_usd',
+  ]
+
+  const ejemplos = [
+    {
+      nombre_razon_social: 'Constructora Los Andes, C.A.',
+      rif_cedula: 'J-40123456-7',
+      telefono: '0414-1234567',
+      direccion_obra: 'Av. Principal, Obra Residencias Sol',
+      correo: 'contacto@constructora.com',
+      saldo_pendiente_usd: 0,
+    },
+    {
+      nombre_razon_social: 'Inversiones del Centro, S.A.',
+      rif_cedula: 'J-30987654-2',
+      telefono: '0424-9876543',
+      direccion_obra: 'Calle Bolívar c/c Miranda, Edif. Torre Sur',
+      correo: 'administracion@inversionescentro.com',
+      saldo_pendiente_usd: 0,
+    },
+  ]
+
+  const hoja = XLSX.utils.json_to_sheet(ejemplos, { header: columnas })
+  const libro = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(libro, hoja, 'Plantilla_Clientes')
+  XLSX.writeFile(libro, 'Plantilla_Clientes_ServiAlquiler.xlsx')
+}
+
 export const exportarInventarioPDF = async (inventario, tasaDelDia) => {
   const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' })
   const logo = await cargarLogoBase64()

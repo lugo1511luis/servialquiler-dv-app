@@ -20,8 +20,39 @@ import {
 } from './utils/formatters'
 
 function App() {
-  const [usuario, setUsuario] = useState(null)
-  const [moduloActivo, setModuloActivo] = useState('dashboard')
+  const [usuario, setUsuario] = useState(() => {
+    try {
+      const guardado = localStorage.getItem('servialquiler_sesion_usuario')
+      if (guardado) return JSON.parse(guardado)
+    } catch {
+      // Ignorar errores de parseo
+    }
+    return null
+  })
+  const [moduloActivo, setModuloActivoState] = useState(() => {
+    try {
+      const guardadoMod = localStorage.getItem('servialquiler_modulo_activo')
+      if (guardadoMod) return guardadoMod
+      const guardado = localStorage.getItem('servialquiler_sesion_usuario')
+      if (guardado) {
+        const u = JSON.parse(guardado)
+        const p = permisosPorRol(u?.rol)
+        return p.modulosPermitidos[0] || 'dashboard'
+      }
+    } catch {
+      // Ignorar
+    }
+    return 'dashboard'
+  })
+
+  const setModuloActivo = (mod) => {
+    try {
+      localStorage.setItem('servialquiler_modulo_activo', mod)
+    } catch {
+      // Ignorar
+    }
+    setModuloActivoState(mod)
+  }
 
   // Estados de las tablas de Supabase
   const [config, setConfig] = useState(null)
@@ -295,8 +326,23 @@ function App() {
   // ---- Manejo de Login y Módulo Inicial según Rol --------------------------
   const manejarLogin = (userLogueado) => {
     const p = permisosPorRol(userLogueado.rol)
+    try {
+      localStorage.setItem('servialquiler_sesion_usuario', JSON.stringify(userLogueado))
+    } catch {
+      // Ignorar
+    }
     setUsuario(userLogueado)
     setModuloActivo(p.modulosPermitidos[0] || 'inventario')
+  }
+
+  const manejarLogout = () => {
+    try {
+      localStorage.removeItem('servialquiler_sesion_usuario')
+      localStorage.removeItem('servialquiler_modulo_activo')
+    } catch {
+      // Ignorar
+    }
+    setUsuario(null)
   }
 
   if (!usuario) {
@@ -326,7 +372,7 @@ function App() {
             ),
           )
         }}
-        onLogout={() => setUsuario(null)}
+        onLogout={manejarLogout}
       />
     )
   }
@@ -354,7 +400,7 @@ function App() {
           onGuardarMetodosPago={guardarMetodosPago}
           enVivo={enVivo}
           hoy={hoy}
-          onLogout={() => setUsuario(null)}
+          onLogout={manejarLogout}
         />
 
         <main className="mx-auto w-full max-w-[1440px] flex-1 space-y-4 px-3 py-4 sm:px-5">

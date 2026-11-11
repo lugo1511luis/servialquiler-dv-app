@@ -5,6 +5,7 @@ import {
   FileSpreadsheet,
   Handshake,
   Users,
+  Briefcase,
   BarChart3,
   ShieldCheck,
   DollarSign,
@@ -66,6 +67,12 @@ const DEFINICION_MODULOS = [
     nombre: 'Reportes e Historial',
     subtitulo: 'Cierre de facturación y movimientos',
     icono: BarChart3,
+  },
+  {
+    id: 'nomina',
+    nombre: 'Nómina y Personal',
+    subtitulo: 'Control semanal y faltas',
+    icono: Briefcase,
   },
   {
     id: 'usuarios',
@@ -534,7 +541,14 @@ export function TopHeader({
           <div className="flex items-center gap-2 rounded-md border border-neutral-800 bg-[#181818] px-3 py-1.5">
             <UserCheck size={15} color={NARANJA} />
             <div className="leading-tight">
-              <p className="text-xs font-bold text-white">{usuario.nombre_completo}</p>
+              <p className="text-xs font-bold text-white">
+                {permisos.esFacturacion &&
+                String(usuario.nombre_completo || '')
+                  .toLowerCase()
+                  .includes('administraci')
+                  ? 'Oficina de Facturación'
+                  : usuario.nombre_completo}
+              </p>
               <span className="inline-block text-[10px] font-bold" style={{ color: NARANJA }}>
                 {etiquetaRol(usuario.rol)}
               </span>
@@ -543,7 +557,7 @@ export function TopHeader({
 
           {/* Botón Cerrar Sesión */}
           <button
-            onClick={onLogout}
+            onClick={() => onLogout()}
             className="flex items-center gap-1.5 rounded-md border border-red-800/60 bg-red-950/40 px-2.5 py-2 text-xs font-bold text-red-300 transition-colors hover:bg-red-900/50"
             title="Cerrar tu sesión de forma segura"
           >

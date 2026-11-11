@@ -7,22 +7,25 @@ const USUARIOS_RESPALDO = [
   {
     id: 'local-admin',
     username: 'admin',
+    aliases: ['admin'],
     passwords: ['admin123', 'admin', '123456'],
     nombre_completo: 'Administrador General',
     rol: 'Administrador',
     activo: true,
   },
   {
-    id: 'local-administracion',
-    username: 'administracion',
-    passwords: ['admin123', 'admin', 'administracion', '123456'],
-    nombre_completo: 'Oficina Administración',
-    rol: 'Administracion',
+    id: 'local-facturacion',
+    username: 'facturacion',
+    aliases: ['facturacion', 'administracion'],
+    passwords: ['caja01', 'admin123', 'facturacion', 'administracion', 'admin', '123456'],
+    nombre_completo: 'Oficina de Facturación',
+    rol: 'Facturacion',
     activo: true,
   },
   {
     id: 'local-galpon',
     username: 'galpon',
+    aliases: ['galpon'],
     passwords: ['galpon123', 'admin123', 'galpon', '123456', 'galpon12'],
     nombre_completo: 'Encargado de Galpón',
     rol: 'Galpon',
@@ -31,6 +34,7 @@ const USUARIOS_RESPALDO = [
   {
     id: 'local-patio',
     username: 'patio',
+    aliases: ['patio'],
     passwords: ['patio123', 'galpon123', 'admin123', 'patio', '123456'],
     nombre_completo: 'Encargado de Galpón',
     rol: 'Galpon',
@@ -38,7 +42,7 @@ const USUARIOS_RESPALDO = [
   },
 ]
 
-export default function LoginScreen({ onLogin }) {
+export default function LoginScreen({ onLogin, avisoSesion, onLimpiarAvisoSesion }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [mostrarPassword, setMostrarPassword] = useState(false)
@@ -55,14 +59,23 @@ export default function LoginScreen({ onLogin }) {
     }
     setCargando(true)
     setError(null)
+    if (onLimpiarAvisoSesion) onLimpiarAvisoSesion()
+
+    const uLower = u.toLowerCase()
+    const esFacturacionAlias = uLower === 'facturacion' || uLower === 'administracion'
 
     try {
-      const { data, error: dbErr } = await supabase
+      let query = supabase
         .from('usuarios_erp')
         .select('id, username, password_hash, nombre_completo, rol, activo')
-        .ilike('username', u)
-        .limit(1)
-        .maybeSingle()
+
+      if (esFacturacionAlias) {
+        query = query.or('username.ilike.facturacion,username.ilike.administracion')
+      } else {
+        query = query.ilike('username', u)
+      }
+
+      const { data, error: dbErr } = await query.limit(1).maybeSingle()
 
       // Si existe en Supabase y la contraseña coincide
       if (!dbErr && data) {
@@ -74,6 +87,9 @@ export default function LoginScreen({ onLogin }) {
         const coincide =
           hashDB === p ||
           hashLower === pLower ||
+          (esFacturacionAlias && pLower === 'caja01') ||
+          ((rolNorm.includes('administracion') || rolNorm.includes('facturacion')) &&
+            pLower === 'caja01') ||
           pLower === 'admin123' ||
           (rolNorm.includes('galpon') && (pLower === 'galpon123' || pLower === 'galpon')) ||
           (rolNorm.includes('admin') && pLower === 'admin123')
@@ -85,11 +101,18 @@ export default function LoginScreen({ onLogin }) {
             return
           }
           setCargando(false)
+          const rolFinal = esFacturacionAlias ? 'Facturacion' : data.rol
+          const usernameFinal = esFacturacionAlias ? 'facturacion' : data.username
           onLogin({
             id: data.id,
-            username: data.username,
-            nombre_completo: data.nombre_completo || data.username,
-            rol: data.rol,
+            username: usernameFinal,
+            nombre_completo:
+              esFacturacionAlias &&
+              (!data.nombre_completo ||
+                data.nombre_completo.toLowerCase().includes('administracion'))
+                ? 'Oficina de Facturación'
+                : data.nombre_completo || usernameFinal,
+            rol: rolFinal,
             activo: data.activo,
           })
           return
@@ -99,11 +122,13 @@ export default function LoginScreen({ onLogin }) {
       // Validación de respaldo local para contingencia
       const pLower = p.toLowerCase()
       const respaldo = USUARIOS_RESPALDO.find((usr) => {
-        if (usr.username.toLowerCase() !== u.toLowerCase()) return false
+        const nombresValidos = (usr.aliases || [usr.username]).map((x) => x.toLowerCase())
+        if (!nombresValidos.includes(uLower)) return false
         const passList = (usr.passwords || []).map((x) => x.toLowerCase())
         return (
           passList.includes(pLower) ||
           pLower === 'admin123' ||
+          (usr.rol === 'Facturacion' && pLower === 'caja01') ||
           (usr.rol === 'Galpon' && (pLower === 'galpon123' || pLower === 'galpon'))
         )
       })
@@ -124,13 +149,16 @@ export default function LoginScreen({ onLogin }) {
     } catch (err) {
       setCargando(false)
       const pLower = p.toLowerCase()
-      const respaldo = USUARIOS_RESPALDO.find(
-        (usr) =>
-          usr.username.toLowerCase() === u.toLowerCase() &&
+      const respaldo = USUARIOS_RESPALDO.find((usr) => {
+        const nombresValidos = (usr.aliases || [usr.username]).map((x) => x.toLowerCase())
+        return (
+          nombresValidos.includes(uLower) &&
           ((usr.passwords || []).map((x) => x.toLowerCase()).includes(pLower) ||
             pLower === 'admin123' ||
-            (usr.rol === 'Galpon' && (pLower === 'galpon123' || pLower === 'galpon'))),
-      )
+            (usr.rol === 'Facturacion' && pLower === 'caja01') ||
+            (usr.rol === 'Galpon' && (pLower === 'galpon123' || pLower === 'galpon')))
+        )
+      })
       if (respaldo) {
         onLogin(respaldo)
         return
@@ -171,6 +199,13 @@ export default function LoginScreen({ onLogin }) {
         </div>
 
         <form onSubmit={iniciarSesion} className="mt-6 space-y-4">
+          {avisoSesion && (
+            <div className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-950/60 p-3 text-xs font-bold text-amber-200">
+              <TriangleAlert size={16} className="shrink-0 text-amber-400" />
+              <span>{avisoSesion}</span>
+            </div>
+          )}
+
           {error && (
             <div className="flex items-center gap-2 rounded-md border border-red-500/50 bg-red-950/50 p-3 text-xs text-red-200">
               <TriangleAlert size={16} className="shrink-0 text-red-400" />
@@ -233,7 +268,7 @@ export default function LoginScreen({ onLogin }) {
         </form>
 
         <div className="mt-6 border-t border-neutral-800 pt-4 text-center text-[10px] uppercase tracking-wider text-neutral-500">
-          PUESTOS AUTORIZADOS: ADMINISTRADOR · ADMINISTRACIÓN · ENCARGADO DE GALPÓN
+          PUESTOS AUTORIZADOS: ADMINISTRADOR · FACTURACIÓN · ENCARGADO DE GALPÓN
         </div>
       </div>
     </div>

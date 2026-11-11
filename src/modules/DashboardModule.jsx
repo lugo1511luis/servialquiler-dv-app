@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Package,
   HardHat,
@@ -11,7 +11,9 @@ import {
   CheckCircle2,
   AlertTriangle,
   HelpCircle,
+  Briefcase,
 } from 'lucide-react'
+import { supabase } from '../supabaseClient'
 import {
   diasEntreHoyY,
   esDeHoy,
@@ -25,6 +27,10 @@ import {
   num,
 } from '../utils/formatters'
 import { estiloBadgeMovimiento } from '../utils/kardex'
+import {
+  calcularStockRealEnObra,
+  reconciliarStockEnSupabase,
+} from '../utils/sincronizacionStock'
 import GuiaRapida from '../components/GuiaRapida'
 
 function TarjetaResumen({
@@ -100,6 +106,7 @@ export default function DashboardModule({
   tasa,
   permisos,
   onIrModulo,
+  onRecargar,
 }) {
   const mapaClientes = useMemo(() => {
     const m = new Map()
@@ -107,15 +114,80 @@ export default function DashboardModule({
     return m
   }, [clientes])
 
+  // Cálculo dinámico de stock real en obra según los contratos activos
+  const stockCalculado = useMemo(() => calcularStockRealEnObra(alquileres), [alquileres])
+
+  // Indicador de Nómina Semanal para Administradores
+  const [resumenNomina, setResumenNomina] = useState(null)
+  useEffect(() => {
+    if (!permisos?.puedeGestionarNomina) return
+    let cancelado = false
+    const cargarResumen = async () => {
+      try {
+        const { data: emp } = await supabase
+          .from('nomina_empleados')
+          .select('id, sueldo_semanal_usd, estado')
+          .eq('estado', 'ACTIVO')
+        if (cancelado) return
+        const activos = emp || []
+        const totalUSD = activos.reduce((s, e) => s + num(e.sueldo_semanal_usd), 0)
+        setResumenNomina({
+          activosCount: activos.length,
+          totalUSD,
+        })
+      } catch (err) {
+        console.warn('Error cargando resumen nómina en dashboard:', err)
+      }
+    }
+    cargarResumen()
+    return () => {
+      cancelado = true
+    }
+  }, [permisos?.puedeGestionarNomina])
+
+  // Auto-sincronización con Supabase si se detecta desfase de stock alquilado
+  const autoSyncRef = useRef(false)
+  useEffect(() => {
+    if (autoSyncRef.current) return
+    if (!inventario || inventario.length === 0) return
+
+    const totalAlquiladoBD = inventario.reduce((s, f) => s + num(f.stock_propio_alquilado), 0)
+    // Desfase evidente: 0 contratos activos pero la BD dice >0 en obra, o diferencia de sumas
+    if (
+      (stockCalculado.contratosActivosCount === 0 && totalAlquiladoBD > 0) ||
+      totalAlquiladoBD !== stockCalculado.totalPiezasEnObra
+    ) {
+      autoSyncRef.current = true
+      reconciliarStockEnSupabase({ inventario, alquileres }).then((res) => {
+        if (res.actualizadosCount > 0 && onRecargar) {
+          onRecargar()
+        }
+      })
+    }
+  }, [inventario, alquileres, stockCalculado, onRecargar])
+
   // KPIs Globales de Inventario en Galpón
   const kpis = useMemo(() => {
     const suma = (campo) => inventario.reduce((s, f) => s + num(f[campo]), 0)
     const totalPropio = suma('stock_propio_total')
-    const disponible = suma('stock_propio_disponible')
-    const obra = suma('stock_propio_alquilado')
+    // Obra calculada dinámicamente: si hay 0 contratos activos, obra es estrictamente 0
+    const obra = stockCalculado.totalPiezasEnObra
     const propiosPrestados = suma('stock_propio_prestado')
     const externosPrestados = suma('stock_externo_prestado')
     const prestamos = propiosPrestados + externosPrestados
+
+    // El disponible real se recalcula restando lo que realmente está en obra y en préstamo
+    const disponible = inventario.reduce((s, f) => {
+      const idStr = String(f.id)
+      const codStr = String(f.codigo || '').trim().toUpperCase()
+      const alqReal =
+        stockCalculado.mapaPorId.get(idStr) ??
+        (codStr ? stockCalculado.mapaPorCodigo.get(codStr) : null) ??
+        0
+      const totalF = num(f.stock_propio_total)
+      const prestF = num(f.stock_propio_prestado)
+      return s + Math.max(0, totalF - alqReal - prestF)
+    }, 0)
 
     const pctDisponibilidad = totalPropio > 0 ? (disponible / totalPropio) * 100 : 0
     const pctOcupacionObra = totalPropio > 0 ? (obra / totalPropio) * 100 : 0
@@ -135,7 +207,7 @@ export default function DashboardModule({
       pctOcupacionObra,
       pctPrestamos,
     }
-  }, [inventario])
+  }, [inventario, stockCalculado])
 
   // Ventas del día desde alquileres.total_contrato_usd
   const ventasHoy = useMemo(() => {
@@ -179,11 +251,21 @@ export default function DashboardModule({
         })
       }
       const g = grupos.get(clave)
+      const idStr = String(f.id)
+      const codStr = String(f.codigo || '').trim().toUpperCase()
+      const alqReal =
+        stockCalculado.mapaPorId.get(idStr) ??
+        (codStr ? stockCalculado.mapaPorCodigo.get(codStr) : null) ??
+        0
+      const totalF = num(f.stock_propio_total)
+      const prestF = num(f.stock_propio_prestado)
+      const dispReal = Math.max(0, totalF - alqReal - prestF)
+
       g.items += 1
-      g.total += num(f.stock_propio_total)
-      g.disponible += num(f.stock_propio_disponible)
-      g.enObra += num(f.stock_propio_alquilado)
-      g.prestado += num(f.stock_propio_prestado) + num(f.stock_externo_prestado)
+      g.total += totalF
+      g.disponible += dispReal
+      g.enObra += alqReal
+      g.prestado += prestF + num(f.stock_externo_prestado)
     })
 
     return Array.from(grupos.values())
@@ -194,7 +276,7 @@ export default function DashboardModule({
         const pctDisp = g.total > 0 ? Math.min(100, Math.round((g.disponible / base) * 100)) : 0
         return { ...g, pctObra, pctDisp }
       })
-  }, [inventario])
+  }, [inventario, stockCalculado])
 
   // Alertas de Contratos Vencidos o Por Vencer
   const alertasContratos = useMemo(() => {
@@ -278,6 +360,45 @@ export default function DashboardModule({
           />
         )}
       </section>
+
+      {/* Indicador Resumen de Nómina Semanal (Exclusivo Administrador) */}
+      {permisos?.puedeGestionarNomina && resumenNomina && (
+        <div
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-neutral-800 bg-[#111111] px-4 py-3 text-white shadow"
+          style={{ borderLeft: `4px solid ${NARANJA}` }}
+        >
+          <div className="flex items-center gap-3">
+            <div className="rounded-lg bg-neutral-900 p-2.5 text-[#FF5500]">
+              <Briefcase size={22} />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-400">
+                  Compromiso de Nómina Semanal ({resumenNomina.activosCount} trabajadores activos)
+                </span>
+                <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-[9px] font-bold text-neutral-300">
+                  Exclusivo Administración
+                </span>
+              </div>
+              <div className="font-mono text-xl font-black text-white">
+                ${fmtUSD(resumenNomina.totalUSD)}{' '}
+                <span className="font-normal text-xs text-neutral-400">
+                  {tasa > 0 ? `(Aprox. Bs. ${fmtVES(resumenNomina.totalUSD * tasa)} a la Tasa del Día)` : ''}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => onIrModulo('nomina')}
+            className="flex items-center gap-1.5 rounded px-3.5 py-1.5 text-xs font-bold text-white shadow hover:brightness-110"
+            style={{ background: NARANJA }}
+          >
+            <span>Gestionar Nómina Semanal</span>
+            <ArrowRight size={13} />
+          </button>
+        </div>
+      )}
 
       {/* Fila 2: Ocupación de Galpón por Categoría + Bitácora en Vivo */}
       <div className="grid gap-4 lg:grid-cols-12">

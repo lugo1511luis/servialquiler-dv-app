@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { TriangleAlert } from 'lucide-react'
+import { TriangleAlert, BellRing, X, PackageCheck, Truck } from 'lucide-react'
 import { supabase } from './supabaseClient'
 import LoginScreen from './components/LoginScreen'
 import { Sidebar, TopHeader } from './components/Layout'
@@ -9,17 +9,29 @@ import AlquileresModule from './modules/AlquileresModule'
 import PrestamosModule from './modules/PrestamosModule'
 import ClientesModule from './modules/ClientesModule'
 import ReportesModule from './modules/ReportesModule'
+import NominaModule from './modules/NominaModule'
 import UsuariosModule from './modules/UsuariosModule'
 import TerminalGalpon from './modules/TerminalGalpon'
 import {
+  CATEGORIAS_INVENTARIO_DEFAULT,
   FONT,
+  guardarCategoriasLocalStorage,
+  leerCategoriasLocalStorage,
   num,
   obtenerMetodosPago,
   ordenarPorCodigo,
   permisosPorRol,
 } from './utils/formatters'
+import {
+  reproducirDobleTimbre,
+  solicitarPermisoNotificaciones,
+  dispararNotificacionNativa,
+} from './utils/notificaciones'
+
+const TIEMPO_INACTIVIDAD_MS = 30 * 60 * 1000 // 30 minutos
 
 function App() {
+  const [avisoInactividad, setAvisoInactividad] = useState(null)
   const [usuario, setUsuario] = useState(() => {
     try {
       const guardado = localStorage.getItem('servialquiler_sesion_usuario')
@@ -68,6 +80,21 @@ function App() {
   const [enVivo, setEnVivo] = useState(false)
   const [recienLlegadosIds, setRecienLlegadosIds] = useState([])
   const [ultimoAvisoRealtime, setUltimoAvisoRealtime] = useState(null)
+  const [toastNotificacion, setToastNotificacion] = useState(null)
+
+  // Solicitar permiso de notificaciones nativas del navegador al iniciar sesión
+  useEffect(() => {
+    if (usuario) {
+      solicitarPermisoNotificaciones()
+    }
+  }, [usuario])
+
+  // Desvanecimiento automático del toast tras 6 segundos
+  useEffect(() => {
+    if (!toastNotificacion) return
+    const t = setTimeout(() => setToastNotificacion(null), 6000)
+    return () => clearTimeout(t)
+  }, [toastNotificacion])
 
   const [{ hoy, anio }] = useState(() => {
     const d = new Date()
@@ -94,15 +121,28 @@ function App() {
       .order('id', { ascending: true })
       .limit(1)
       .maybeSingle()
-    if (!err && data) setConfig(data)
+    const respaldoLocal = leerCategoriasLocalStorage()
+    if (!err && data) {
+      const cats =
+        Array.isArray(data.categorias_inventario) && data.categorias_inventario.length > 0
+          ? data.categorias_inventario
+          : respaldoLocal.length > 0
+            ? respaldoLocal
+            : CATEGORIAS_INVENTARIO_DEFAULT
+      setConfig({ ...data, categorias_inventario: cats })
+    } else {
+      setConfig((prev) => ({
+        ...(prev || {}),
+        categorias_inventario:
+          respaldoLocal.length > 0 ? respaldoLocal : CATEGORIAS_INVENTARIO_DEFAULT,
+      }))
+    }
   }, [])
 
   const cargarInventario = useCallback(async () => {
     const { data, error: err } = await supabase
       .from('inventario')
-      .select(
-        'id, codigo, material, categoria, stock_propio_total, stock_propio_disponible, stock_propio_alquilado, stock_propio_prestado, stock_externo_prestado, precio_alquiler_dia_usd',
-      )
+      .select('*')
       .order('codigo', { ascending: true })
     if (err) setError(err.message)
     else {
@@ -215,9 +255,23 @@ function App() {
               return [payload.new, ...prev]
             })
             setRecienLlegadosIds((prev) => [payload.new.id, ...prev.filter((id) => id !== payload.new.id)])
-            setUltimoAvisoRealtime(
-              `¡NUEVO PEDIDO RECIBIDO EN VIVO: ${payload.new.codigo_contrato || 'Contrato'} — Cliente: ${payload.new.cliente_nombre || 'Nuevo despacho'}!`,
-            )
+            const titulo = '¡NUEVO PEDIDO RECIBIDO EN VIVO!'
+            const msj = `${payload.new.codigo_contrato || 'Contrato'} — Cliente: ${payload.new.cliente_nombre || 'Nuevo despacho'}`
+            setUltimoAvisoRealtime(`${titulo}: ${msj}`)
+
+            // Disparar sonido doble timbre y notificación push del navegador
+            reproducirDobleTimbre()
+            dispararNotificacionNativa({
+              titulo,
+              cuerpo: msj,
+              tag: `alquiler-${payload.new.id || Date.now()}`,
+            })
+            setToastNotificacion({
+              id: Date.now(),
+              tipo: 'alquiler',
+              titulo,
+              mensaje: msj,
+            })
           } else if (payload.eventType === 'UPDATE' && payload.new) {
             setAlquileres((prev) =>
               prev.map((c) => (c.id === payload.new.id ? { ...c, ...payload.new } : c)),
@@ -242,8 +296,24 @@ function App() {
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'movimientos_inventario' },
-        () => {
+        (payload) => {
           cargarMovimientos()
+          if (payload.eventType === 'INSERT' && payload.new) {
+            reproducirDobleTimbre()
+            const titulo = `Movimiento de Galpón: ${payload.new.tipo_movimiento || 'Kardex'}`
+            const msj = `${payload.new.material || 'Material'} (${payload.new.cantidad || 0} und) — ${payload.new.cliente_nombre || payload.new.observaciones || 'Registrado'}`
+            dispararNotificacionNativa({
+              titulo,
+              cuerpo: msj,
+              tag: `kardex-${payload.new.id || Date.now()}`,
+            })
+            setToastNotificacion({
+              id: Date.now(),
+              tipo: 'galpon',
+              titulo,
+              mensaje: msj,
+            })
+          }
         },
       )
       .on('postgres_changes', { event: '*', schema: 'public', table: 'usuarios_erp' }, () => {
@@ -295,35 +365,76 @@ function App() {
   }
 
   const guardarCategoriasInventario = async (nuevaLista) => {
-    if (!permisos.puedeEditarTasa && !permisos.esAdmin) {
-      return 'Solo el Administrador o Administración puede gestionar las categorías.'
-    }
-    if (!config) return 'Configuración general no cargada.'
+    // Guardar de inmediato en localStorage y estado local como respaldo garantizado
+    guardarCategoriasLocalStorage(nuevaLista)
+    setConfig((prev) => ({ ...(prev || {}), categorias_inventario: nuevaLista }))
 
-    // Intento de actualización en Supabase
-    const { data, error: err } = await supabase
-      .from('configuracion_general')
-      .update({ categorias_inventario: nuevaLista, updated_at: new Date().toISOString() })
-      .eq('id', config.id)
-      .select('*')
-      .single()
-
-    if (err) {
-      // Si la columna no existiera en Supabase aún, guardar en memoria/localStorage de contingencia
-      try {
-        localStorage.setItem('servialquiler_categorias_inventario', JSON.stringify(nuevaLista))
-      } catch {
-        // Ignorar
+    try {
+      let targetId = config?.id
+      if (!targetId) {
+        const { data: existente } = await supabase
+          .from('configuracion_general')
+          .select('id')
+          .order('id', { ascending: true })
+          .limit(1)
+          .maybeSingle()
+        if (existente?.id) targetId = existente.id
       }
-      setConfig((prev) => ({ ...prev, categorias_inventario: nuevaLista }))
-      return null
+
+      if (targetId) {
+        const { data, error: errUpsert } = await supabase
+          .from('configuracion_general')
+          .upsert(
+            {
+              id: targetId,
+              categorias_inventario: nuevaLista,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'id' },
+          )
+          .select('*')
+          .maybeSingle()
+
+        if (!errUpsert && data) {
+          setConfig({ ...data, categorias_inventario: nuevaLista })
+          return null
+        }
+
+        const { data: dataUpd, error: errUpd } = await supabase
+          .from('configuracion_general')
+          .update({ categorias_inventario: nuevaLista, updated_at: new Date().toISOString() })
+          .eq('id', targetId)
+          .select('*')
+          .maybeSingle()
+
+        if (!errUpd && dataUpd) {
+          setConfig({ ...dataUpd, categorias_inventario: nuevaLista })
+        }
+      } else {
+        const { data: dataIns, error: errIns } = await supabase
+          .from('configuracion_general')
+          .insert([
+            {
+              tasa_bcv: tasa || 50,
+              categorias_inventario: nuevaLista,
+              updated_at: new Date().toISOString(),
+            },
+          ])
+          .select('*')
+          .maybeSingle()
+
+        if (!errIns && dataIns) {
+          setConfig({ ...dataIns, categorias_inventario: nuevaLista })
+        }
+      }
+    } catch {
+      // Respaldo en localStorage ya fue aplicado
     }
 
-    setConfig(data)
     return null
   }
 
-  // ---- Manejo de Login y Módulo Inicial según Rol --------------------------
+  // ---- Manejo de Login, Logout y Cierre por Inactividad (30 min) ------------
   const manejarLogin = (userLogueado) => {
     const p = permisosPorRol(userLogueado.rol)
     try {
@@ -331,49 +442,133 @@ function App() {
     } catch {
       // Ignorar
     }
+    setAvisoInactividad(null)
     setUsuario(userLogueado)
     setModuloActivo(p.modulosPermitidos[0] || 'inventario')
   }
 
-  const manejarLogout = () => {
+  const manejarLogout = useCallback((motivoAviso = null) => {
     try {
       localStorage.removeItem('servialquiler_sesion_usuario')
       localStorage.removeItem('servialquiler_modulo_activo')
     } catch {
       // Ignorar
     }
+    if (typeof motivoAviso === 'string' && motivoAviso) {
+      setAvisoInactividad(motivoAviso)
+    }
     setUsuario(null)
-  }
+  }, [])
+
+  // Temporizador de inactividad: 30 minutos para admin y facturacion.
+  // Si el usuario es galpon, NUNCA se cierra su sesión por inactividad.
+  useEffect(() => {
+    if (!usuario) return
+    const uname = String(usuario.username ?? '').trim().toLowerCase()
+    if (permisos.esGalpon || uname === 'galpon') {
+      return
+    }
+
+    let timeoutId = null
+
+    const reiniciarTemporizador = () => {
+      if (timeoutId) clearTimeout(timeoutId)
+      timeoutId = setTimeout(() => {
+        manejarLogout(
+          'Tu sesión se cerró automáticamente tras 30 minutos de inactividad por seguridad.',
+        )
+      }, TIEMPO_INACTIVIDAD_MS)
+    }
+
+    const eventosActividad = ['mousemove', 'keydown', 'click', 'touchstart']
+    eventosActividad.forEach((ev) =>
+      window.addEventListener(ev, reiniciarTemporizador, { passive: true }),
+    )
+    reiniciarTemporizador()
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId)
+      eventosActividad.forEach((ev) => window.removeEventListener(ev, reiniciarTemporizador))
+    }
+  }, [usuario, permisos.esGalpon, manejarLogout])
 
   if (!usuario) {
-    return <LoginScreen onLogin={manejarLogin} />
+    return (
+      <LoginScreen
+        onLogin={manejarLogin}
+        avisoSesion={avisoInactividad}
+        onLimpiarAvisoSesion={() => setAvisoInactividad(null)}
+      />
+    )
+  }
+
+  const renderToast = () => {
+    if (!toastNotificacion) return null
+    return (
+      <div
+        className="fixed bottom-5 right-5 z-[9999] flex max-w-sm items-start gap-3 rounded-md border p-3.5 shadow-2xl transition-all"
+        style={{
+          background: '#111111',
+          borderColor: '#FF5500',
+          color: '#ffffff',
+          fontFamily: FONT,
+        }}
+      >
+        <div className="rounded-full bg-[#FF5500]/20 p-2 text-[#FF5500] shrink-0">
+          {toastNotificacion.tipo === 'alquiler' ? (
+            <Truck size={20} color="#FF5500" />
+          ) : (
+            <PackageCheck size={20} color="#FF5500" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 font-bold text-xs uppercase tracking-wider text-[#FF5500]">
+            <BellRing size={13} />
+            <span>{toastNotificacion.titulo}</span>
+          </div>
+          <p className="mt-1 text-xs text-neutral-200 break-words leading-relaxed">
+            {toastNotificacion.mensaje}
+          </p>
+        </div>
+        <button
+          onClick={() => setToastNotificacion(null)}
+          className="text-neutral-400 hover:text-white shrink-0"
+          title="Cerrar notificación"
+        >
+          <X size={16} />
+        </button>
+      </div>
+    )
   }
 
   // Vista restringida exclusiva a pantalla completa para el rol Galpón
   if (permisos.esGalpon) {
     return (
-      <TerminalGalpon
-        usuario={usuario}
-        alquileres={alquileres}
-        inventario={inventario}
-        clientes={clientes}
-        enVivo={enVivo}
-        hoy={hoy}
-        recienLlegadosIds={recienLlegadosIds}
-        ultimoAvisoRealtime={ultimoAvisoRealtime}
-        onLimpiarAviso={() => {
-          setUltimoAvisoRealtime(null)
-          setRecienLlegadosIds([])
-        }}
-        onActualizarContratoLocal={(contratoActualizado) => {
-          setAlquileres((prev) =>
-            prev.map((c) =>
-              c.id === contratoActualizado.id ? { ...c, ...contratoActualizado } : c,
-            ),
-          )
-        }}
-        onLogout={manejarLogout}
-      />
+      <>
+        <TerminalGalpon
+          usuario={usuario}
+          alquileres={alquileres}
+          inventario={inventario}
+          clientes={clientes}
+          enVivo={enVivo}
+          hoy={hoy}
+          recienLlegadosIds={recienLlegadosIds}
+          ultimoAvisoRealtime={ultimoAvisoRealtime}
+          onLimpiarAviso={() => {
+            setUltimoAvisoRealtime(null)
+            setRecienLlegadosIds([])
+          }}
+          onActualizarContratoLocal={(contratoActualizado) => {
+            setAlquileres((prev) =>
+              prev.map((c) =>
+                c.id === contratoActualizado.id ? { ...c, ...contratoActualizado } : c,
+              ),
+            )
+          }}
+          onLogout={manejarLogout}
+        />
+        {renderToast()}
+      </>
     )
   }
 
@@ -420,12 +615,14 @@ function App() {
               tasa={tasa}
               permisos={permisos}
               onIrModulo={setModuloActivo}
+              onRecargar={recargarTodo}
             />
           )}
 
           {moduloSeguro === 'inventario' && (
             <InventarioModule
               inventario={inventario}
+              alquileres={alquileres}
               tasa={tasa}
               permisos={permisos}
               config={config}
@@ -478,6 +675,13 @@ function App() {
             />
           )}
 
+          {moduloSeguro === 'nomina' && permisos.puedeGestionarNomina && (
+            <NominaModule
+              tasa={tasa}
+              permisos={permisos}
+            />
+          )}
+
           {moduloSeguro === 'usuarios' && permisos.puedeGestionarUsuarios && (
             <UsuariosModule
               usuarios={usuarios}
@@ -491,6 +695,7 @@ function App() {
           © {anio} SERVIALQUILER DV, C.A. · CONTROL DE GALPÓN, ALQUILERES Y FACTURACIÓN
         </footer>
       </div>
+      {renderToast()}
     </div>
   )
 }

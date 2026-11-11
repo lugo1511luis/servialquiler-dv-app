@@ -90,6 +90,7 @@ export default function PrestamosModule({
     e.preventDefault()
     const eq = mapaInventario.get(String(inventarioId))
     const cant = num(cantidad)
+    const tipoOperacion = tipo === 'PRESTADO' ? 'PRESTADO' : 'RECIBIDO'
     if (!empresaAliada.trim()) {
       setErrorMsg('Indica el nombre de la empresa aliada.')
       return
@@ -99,7 +100,7 @@ export default function PrestamosModule({
       return
     }
 
-    if (tipo === 'PRESTADO' && cant > num(eq.stock_propio_disponible)) {
+    if (tipoOperacion === 'PRESTADO' && cant > num(eq.stock_propio_disponible)) {
       setErrorMsg(
         `No tenemos suficiente material propio disponible en galpón (${eq.stock_propio_disponible}) para prestar.`,
       )
@@ -111,8 +112,9 @@ export default function PrestamosModule({
 
     const payload = {
       empresa_aliada: empresaAliada.trim(),
-      tipo_movimiento: tipo,
-      tipo: tipo,
+      tipo_operacion: tipoOperacion,
+      tipo_movimiento: tipoOperacion,
+      tipo: tipoOperacion,
       inventario_id: eq.id,
       material: eq.material,
       codigo: eq.codigo,
@@ -131,7 +133,7 @@ export default function PrestamosModule({
 
     const refDoc = creado?.id ? `PREST-${String(creado.id).slice(0, 6)}` : `PREST-${hoyISO()}`
 
-    if (tipo === 'RECIBIDO') {
+    if (tipoOperacion === 'RECIBIDO') {
       const nuevoExterno = num(eq.stock_externo_prestado) + cant
       await supabase
         .from('inventario')
@@ -192,7 +194,7 @@ export default function PrestamosModule({
       inventario.find((i) => i.codigo === p.codigo || i.material === p.material)
 
     const cant = num(p.cantidad)
-    const t = String(p.tipo_movimiento || p.tipo || 'RECIBIDO').toUpperCase()
+    const t = String(p.tipo_operacion || p.tipo_movimiento || p.tipo || 'RECIBIDO').toUpperCase()
     const esRecibido = t.includes('RECIB') || t.includes('EXTER') || t.includes('PEDID')
     const refDoc = p.id ? `DEV-PREST-${String(p.id).slice(0, 6)}` : `DEV-PREST-${hoyISO()}`
     const aliado = p.empresa_aliada || p.empresa || 'Empresa Aliada'
@@ -313,6 +315,7 @@ export default function PrestamosModule({
             <button
               onClick={() => {
                 setErrorMsg(null)
+                setTipo('RECIBIDO')
                 setModalAbierto(true)
               }}
               className="flex items-center gap-1.5 rounded px-3.5 py-1.5 text-xs font-bold text-white shadow"
@@ -346,7 +349,7 @@ export default function PrestamosModule({
               <tbody className="divide-y divide-neutral-200">
                 {filtrados.map((p) => {
                   const eq = mapaInventario.get(String(p.inventario_id ?? p.equipo_id))
-                  const t = String(p.tipo_movimiento || p.tipo || 'RECIBIDO').toUpperCase()
+                  const t = String(p.tipo_operacion || p.tipo_movimiento || p.tipo || 'RECIBIDO').toUpperCase()
                   const esRecibido =
                     t.includes('RECIB') || t.includes('EXTER') || t.includes('PEDID')
                   const devuelto =

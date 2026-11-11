@@ -29,6 +29,7 @@ import {
   NARANJA,
   NEGRO,
   num,
+  obtenerPrecioReposicionEquipo,
 } from '../utils/formatters'
 import { registrarMovimientoKardex } from '../utils/kardex'
 
@@ -106,9 +107,13 @@ export default function TerminalGalpon({
   const [mensajeExito, setMensajeExito] = useState(null)
   const [logoError, setLogoError] = useState(false)
 
-  // Modal Devolución Parcial en Galpón
+  // Pestaña activa para dispositivos móviles (< lg)
+  const [tabMovil, setTabMovil] = useState('salidas') // 'salidas' | 'recepciones'
+
+  // Modal Devolución Parcial o Total en Galpón + Extravíos
   const [modalDevolucionParcial, setModalDevolucionParcial] = useState(null)
   const [devolucionCantidades, setDevolucionCantidades] = useState({})
+  const [devolucionFaltantes, setDevolucionFaltantes] = useState({})
   const [fechaDevolucionParcial, setFechaDevolucionParcial] = useState(() => hoyISO())
 
   const mapaClientes = useMemo(() => {
@@ -211,101 +216,27 @@ export default function TerminalGalpon({
   }
 
   // Acción Columna Derecha: [✓ Confirmar Recepción y Regreso a Galpón]
-  const confirmarRecepcionYRegreso = async (contrato) => {
-    setProcesandoId(contrato.id)
-    setErrorMsg(null)
-    setMensajeExito(null)
-
-    const items = obtenerItemsContrato(contrato)
-    const cli = mapaClientes.get(String(contrato.cliente_id))
-    const nombreCliente =
-      contrato.cliente_nombre || cli?.nombre_razon_social || 'Cliente de Obra'
-    const refContrato =
-      contrato.codigo_contrato ||
-      contrato.numero_contrato ||
-      `CT-${String(contrato.id ?? '').padStart(4, '0')}`
-
-    // 1. Reintegrar stock_propio_disponible y descontar stock_propio_alquilado en `inventario`,
-    //    y registrar la entrada en `movimientos_inventario`
-    for (const it of items) {
-      const eqActual = inventario.find(
-        (i) =>
-          String(i.id) === String(it.inventario_id) ||
-          (it.codigo && i.codigo === it.codigo),
-      )
-      const cant = num(it.cantidad) || 1
-
-      if (eqActual) {
-        const nuevoDisp = num(eqActual.stock_propio_disponible) + cant
-        const nuevoAlq = Math.max(0, num(eqActual.stock_propio_alquilado) - cant)
-
-        await supabase
-          .from('inventario')
-          .update({
-            stock_propio_disponible: nuevoDisp,
-            stock_propio_alquilado: nuevoAlq,
-          })
-          .eq('id', eqActual.id)
-
-        await registrarMovimientoKardex({
-          inventario_id: eqActual.id,
-          codigo: eqActual.codigo,
-          material: eqActual.material,
-          tipo_movimiento: 'ENTRADA (Devolución a Galpón)',
-          cantidad: cant,
-          stock_resultante: nuevoDisp,
-          referencia_documento: refContrato,
-          cliente_nombre: nombreCliente,
-          observaciones: `Recibido en galpón por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
-        })
-      } else {
-        await registrarMovimientoKardex({
-          inventario_id: it.inventario_id ?? null,
-          codigo: it.codigo ?? '—',
-          material: it.material ?? 'Equipo devuelto',
-          tipo_movimiento: 'ENTRADA (Devolución a Galpón)',
-          cantidad: cant,
-          stock_resultante: 0,
-          referencia_documento: refContrato,
-          cliente_nombre: nombreCliente,
-          observaciones: `Recibido en galpón por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
-        })
-      }
-    }
-
-    // 2. Actualizar el estado del contrato a 'Devuelto a Galpón'
-    const { data, error } = await actualizarContratoSeguro(contrato.id, {
-      estado_despacho: 'Devuelto a Galpón',
-      estado: 'Devuelto a Galpón',
-    })
-
-    if (error) {
-      setProcesandoId(null)
-      setErrorMsg(`Error al cerrar recepción de ${refContrato}: ${error.message}`)
-      return
-    }
-
-    if (data && onActualizarContratoLocal) {
-      onActualizarContratoLocal(data)
-    }
-
-    setProcesandoId(null)
-    setMensajeExito(
-      `Equipos del contrato ${refContrato} (${nombreCliente}) recibidos y sumados nuevamente al stock disponible en galpón.`,
-    )
+  // Abre el modal de Devolución con el 100% de las piezas activas prellenadas,
+  // permitiendo también reportar piezas faltantes / extraviadas / dañadas.
+  const confirmarRecepcionYRegreso = (contrato) => {
+    abrirDevolucionParcial(contrato, true)
   }
 
-  // Devolución Parcial en Terminal de Galpón
-  const abrirDevolucionParcial = (c) => {
+  // Devolución Parcial o Total en Terminal de Galpón
+  const abrirDevolucionParcial = (c, prellenarTotal = false) => {
     setModalDevolucionParcial(c)
     setFechaDevolucionParcial(hoyISO())
     const items = obtenerItemsContrato(c)
     const initCant = {}
+    const initFalt = {}
     items.forEach((it, idx) => {
       const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
-      initCant[idKey] = ''
+      const cantActiva = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
+      initCant[idKey] = !it.devuelto && prellenarTotal && cantActiva > 0 ? String(cantActiva) : ''
+      initFalt[idKey] = ''
     })
     setDevolucionCantidades(initCant)
+    setDevolucionFaltantes(initFalt)
     setErrorMsg(null)
   }
 
@@ -318,25 +249,30 @@ export default function TerminalGalpon({
     const fechaDev = fechaDevolucionParcial || hoyISO()
     const diasUso = diasEntreFechas(contrato.fecha_inicio, fechaDev)
 
-    // Validar cantidades
+    // Validar cantidades devueltas y faltantes
     let totalDevolviendo = 0
+    let totalFaltantes = 0
     for (let idx = 0; idx < items.length; idx++) {
       const it = items[idx]
       if (it.devuelto) continue
       const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
       const cantADevolver = Number(devolucionCantidades[idKey] || 0)
-      const cantActiva = Number(it.cantidad || 0)
-      if (cantADevolver > cantActiva) {
+      const cantFaltante = Number(devolucionFaltantes[idKey] || 0)
+      const cantActiva = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
+      if (cantADevolver + cantFaltante > cantActiva) {
         setErrorMsg(
-          `No puedes devolver más unidades (${cantADevolver}) de las que están en obra (${cantActiva}) para ${it.material}.`,
+          `La suma de unidades devueltas (${cantADevolver}) + faltantes/extraviadas (${cantFaltante}) supera las unidades en obra (${cantActiva}) para ${it.material}.`,
         )
         return
       }
       totalDevolviendo += cantADevolver
+      totalFaltantes += cantFaltante
     }
 
-    if (totalDevolviendo <= 0) {
-      setErrorMsg('Indica la cantidad a devolver de al menos un equipo.')
+    if (totalDevolviendo + totalFaltantes <= 0) {
+      setErrorMsg(
+        'Indica la cantidad a devolver o las piezas faltantes/extraviadas de al menos un equipo.',
+      )
       return
     }
 
@@ -359,79 +295,120 @@ export default function TerminalGalpon({
       const it = items[idx]
       const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
       const cantADevolver = Number(devolucionCantidades[idKey] || 0)
-      const cantActual = Number(it.cantidad || 0)
+      const cantFaltante = Number(devolucionFaltantes[idKey] || 0)
+      const cantProcesada = cantADevolver + cantFaltante
+      const cantActual = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
       const precioDia = num(
         it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
       )
+
+      const eqActual = inventario.find(
+        (i) =>
+          String(i.id) === String(it.inventario_id) ||
+          (it.codigo && i.codigo === it.codigo),
+      )
+      const precioRepUnit = obtenerPrecioReposicionEquipo(eqActual || it)
+      const cargoExtravioItem = Number((cantFaltante * precioRepUnit).toFixed(2))
 
       if (it.devuelto) {
         nuevosItems.push(it)
         continue
       }
 
-      if (cantADevolver <= 0) {
+      if (cantProcesada <= 0) {
         nuevosItems.push(it)
         todasDevueltas = false
-      } else if (cantADevolver === cantActual) {
-        const subtotalEfectivo = Number((cantActual * precioDia * diasUso).toFixed(2))
-        nuevosItems.push({
-          ...it,
-          devuelto: true,
-          fecha_devolucion: fechaDev,
-          dias_efectivos: diasUso,
-          subtotal_item_usd: subtotalEfectivo,
-          estado: 'Devuelto Parcial',
-        })
       } else {
-        todasDevueltas = false
-        const cantRestante = cantActual - cantADevolver
-        const subtotalEfectivo = Number((cantADevolver * precioDia * diasUso).toFixed(2))
+        if (cantADevolver > 0) {
+          const subtotalEfectivo = Number((cantADevolver * precioDia * diasUso).toFixed(2))
+          nuevosItems.push({
+            ...it,
+            cantidad: cantADevolver,
+            devuelto: true,
+            fecha_devolucion: fechaDev,
+            dias_efectivos: diasUso,
+            subtotal_item_usd: subtotalEfectivo,
+            estado: cantProcesada === cantActual ? 'Devuelto a Galpón' : 'Devuelto Parcial',
+          })
+        }
 
-        nuevosItems.push({
-          ...it,
-          cantidad: cantADevolver,
-          devuelto: true,
-          fecha_devolucion: fechaDev,
-          dias_efectivos: diasUso,
-          subtotal_item_usd: subtotalEfectivo,
-          estado: 'Devuelto Parcial',
-        })
+        if (cantFaltante > 0) {
+          const subtotalAlquilerFaltante = Number((cantFaltante * precioDia * diasUso).toFixed(2))
+          const subtotalConIndemnizacion = Number(
+            (subtotalAlquilerFaltante + cargoExtravioItem).toFixed(2),
+          )
+          nuevosItems.push({
+            ...it,
+            cantidad: cantFaltante,
+            devuelto: true,
+            extraviado: true,
+            cantidad_extraviada: cantFaltante,
+            precio_reposicion_usd: precioRepUnit,
+            cargo_reposicion_usd: cargoExtravioItem,
+            fecha_devolucion: fechaDev,
+            dias_efectivos: diasUso,
+            subtotal_item_usd: subtotalConIndemnizacion,
+            estado: 'EXTRAVÍO / NO DEVUELTO EN OBRA',
+          })
+        }
 
-        nuevosItems.push({
-          ...it,
-          cantidad: cantRestante,
-          devuelto: false,
-        })
+        const cantRestante = cantActual - cantProcesada
+        if (cantRestante > 0) {
+          todasDevueltas = false
+          nuevosItems.push({
+            ...it,
+            cantidad: cantRestante,
+            devuelto: false,
+          })
+        }
       }
 
-      if (cantADevolver > 0) {
-        const eqActual = inventario.find(
-          (i) =>
-            String(i.id) === String(it.inventario_id) ||
-            (it.codigo && i.codigo === it.codigo),
-        )
-        if (eqActual) {
-          const nuevoDisp = num(eqActual.stock_propio_disponible) + cantADevolver
-          const nuevoAlq = Math.max(0, num(eqActual.stock_propio_alquilado) - cantADevolver)
+      if (eqActual && (cantADevolver > 0 || cantFaltante > 0)) {
+        const dispActual = num(eqActual.stock_propio_disponible)
+        const alqActual = num(eqActual.stock_propio_alquilado)
+        const totalPropioActual = num(eqActual.stock_propio_total)
 
-          await supabase
-            .from('inventario')
-            .update({
-              stock_propio_disponible: nuevoDisp,
-              stock_propio_alquilado: nuevoAlq,
-            })
-            .eq('id', eqActual.id)
+        const excesoSobreAlquilado = Math.max(0, cantProcesada - alqActual)
+        const nuevoDisp = Math.max(0, dispActual + cantADevolver - excesoSobreAlquilado)
+        const nuevoAlq = Math.max(0, alqActual - cantProcesada)
+        const nuevoTotalPropio = Math.max(0, totalPropioActual - cantFaltante)
 
+        await supabase
+          .from('inventario')
+          .update({
+            stock_propio_total: nuevoTotalPropio,
+            stock_propio_disponible: nuevoDisp,
+            stock_propio_alquilado: nuevoAlq,
+          })
+          .eq('id', eqActual.id)
+
+        if (cantADevolver > 0) {
           await registrarMovimientoKardex({
             inventario_id: eqActual.id,
             codigo: eqActual.codigo,
             material: eqActual.material,
-            tipo_movimiento: 'ENTRADA (Devolución Parcial de Galpón)',
+            tipo_movimiento: todasDevueltas
+              ? 'ENTRADA (Devolución a Galpón)'
+              : 'ENTRADA (Devolución Parcial de Galpón)',
             cantidad: cantADevolver,
             stock_resultante: nuevoDisp,
             referencia_documento: refContrato,
             cliente_nombre: nombreCliente,
-            observaciones: `Devolución parcial recibida en galpón (${cantADevolver} und. tras ${diasUso} días de uso). Operador: ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
+            observaciones: `Devolución recibida en galpón (${cantADevolver} und. tras ${diasUso} días de uso). Operador: ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
+          })
+        }
+
+        if (cantFaltante > 0) {
+          await registrarMovimientoKardex({
+            inventario_id: eqActual.id,
+            codigo: eqActual.codigo,
+            material: eqActual.material,
+            tipo_movimiento: 'EXTRAVÍO / NO DEVUELTO EN OBRA',
+            cantidad: cantFaltante,
+            stock_resultante: nuevoDisp,
+            referencia_documento: refContrato,
+            cliente_nombre: nombreCliente,
+            observaciones: `EXTRAVÍO / NO DEVUELTO EN OBRA (${cantFaltante} pza(s) faltantes/dañadas). Reportado en galpón por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
           })
         }
       }
@@ -446,8 +423,9 @@ export default function TerminalGalpon({
       if (it.devuelto) {
         return (
           acc +
-          (num(it.subtotal_item_usd) ||
-            num(it.cantidad) * precio * (num(it.dias_efectivos) || diasUso))
+          (it.subtotal_item_usd !== undefined
+            ? num(it.subtotal_item_usd)
+            : num(it.cantidad) * precio * (num(it.dias_efectivos) || diasUso))
         )
       }
       return acc + num(it.cantidad) * precio * diasContrato
@@ -455,7 +433,7 @@ export default function TerminalGalpon({
 
     const nuevoTotalContrato = Number((nuevoSubtotalEquipos + flete).toFixed(2))
     const totalAnterior = num(contrato.total_contrato_usd)
-    const reduccionTotal = Math.max(0, Number((totalAnterior - nuevoTotalContrato).toFixed(2)))
+    const diferenciaTotal = Number((nuevoTotalContrato - totalAnterior).toFixed(2))
 
     const pagado = num(contrato.monto_pagado_usd)
     const nuevoRestante = Math.max(0, Number((nuevoTotalContrato - pagado).toFixed(2)))
@@ -482,14 +460,14 @@ export default function TerminalGalpon({
 
     if (errAct) {
       setProcesandoId(null)
-      setErrorMsg(`Error al registrar devolución parcial: ${errAct.message}`)
+      setErrorMsg(`Error al registrar devolución: ${errAct.message}`)
       return
     }
 
-    if (cli && reduccionTotal > 0) {
+    if (cli && Math.abs(diferenciaTotal) > 0.009) {
       const nuevoSaldoCliente = Math.max(
         0,
-        Number((num(cli.saldo_pendiente_usd) - reduccionTotal).toFixed(2)),
+        Number((num(cli.saldo_pendiente_usd) + diferenciaTotal).toFixed(2)),
       )
       await supabase
         .from('clientes')
@@ -504,7 +482,9 @@ export default function TerminalGalpon({
     setProcesandoId(null)
     setModalDevolucionParcial(null)
     setMensajeExito(
-      `Entrada parcial registrada para ${refContrato} (${nombreCliente}). Stock disponible actualizado en galpón.`,
+      todasDevueltas
+        ? `Recepción completada para ${refContrato} (${nombreCliente}). Stock de galpón actualizado.`
+        : `Entrada parcial registrada para ${refContrato} (${nombreCliente}). Stock disponible actualizado en galpón.`,
     )
   }
 
@@ -671,13 +651,53 @@ export default function TerminalGalpon({
           </div>
         )}
 
-        {/* GRILLA DE 2 COLUMNAS OPERATIVAS */}
+        {/* SELECTOR DE PESTAÑAS MÓVILES (Exclusivo pantallas < lg para uso cómodo con el pulgar) */}
+        <div className="grid grid-cols-2 gap-2 lg:hidden">
+          <button
+            type="button"
+            onClick={() => setTabMovil('salidas')}
+            className={`flex min-h-[52px] items-center justify-center gap-2 rounded-lg px-3 py-2.5 font-bold transition-all active:scale-[0.98] ${
+              tabMovil === 'salidas'
+                ? 'text-white shadow-lg ring-2 ring-orange-500'
+                : 'border border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+            }`}
+            style={{
+              background: tabMovil === 'salidas' ? NARANJA : undefined,
+            }}
+          >
+            <Truck size={20} className={tabMovil === 'salidas' ? 'text-white' : 'text-neutral-400'} />
+            <div className="text-left leading-tight">
+              <span className="block text-xs uppercase tracking-wider">Por Despachar</span>
+              <span className="text-[11px] font-mono opacity-90">({pedidosPorCargar.length} salidas)</span>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setTabMovil('recepciones')}
+            className={`flex min-h-[52px] items-center justify-center gap-2 rounded-lg px-3 py-2.5 font-bold transition-all active:scale-[0.98] ${
+              tabMovil === 'recepciones'
+                ? 'bg-emerald-600 text-white shadow-lg ring-2 ring-emerald-400'
+                : 'border border-neutral-700 bg-neutral-900 text-neutral-400 hover:text-white'
+            }`}
+          >
+            <PackageCheck size={20} className={tabMovil === 'recepciones' ? 'text-white' : 'text-neutral-400'} />
+            <div className="text-left leading-tight">
+              <span className="block text-xs uppercase tracking-wider">En Obra</span>
+              <span className="text-[11px] font-mono opacity-90">({recepcionDevoluciones.length} retornos)</span>
+            </div>
+          </button>
+        </div>
+
+        {/* GRILLA DE 2 COLUMNAS OPERATIVAS (En móvil muestra la pestaña activa; en escritorio muestra ambas) */}
         <div className="grid flex-1 grid-cols-1 gap-6 lg:grid-cols-2">
           {/* ===============================================================
               COLUMNA IZQUIERDA: PEDIDOS POR CARGAR (Salidas)
              =============================================================== */}
           <section
-            className="flex flex-col overflow-hidden rounded-md border border-neutral-800 bg-[#1e1e1e] shadow-xl"
+            className={`flex flex-col overflow-hidden rounded-md border border-neutral-800 bg-[#1e1e1e] shadow-xl ${
+              tabMovil === 'salidas' ? 'flex' : 'hidden lg:flex'
+            }`}
             style={{ borderTop: `4px solid ${NARANJA}` }}
           >
             <div
@@ -840,12 +860,12 @@ export default function TerminalGalpon({
                         </div>
                       </div>
 
-                      {/* Botón de Acción Principal */}
+                      {/* Botón de Acción Principal (Alto mínimo 48px para uso cómodo en almacén) */}
                       <button
                         type="button"
                         disabled={estaProcesando}
                         onClick={() => marcarComoCargadoYDespachado(c)}
-                        className="mt-4 flex w-full items-center justify-center gap-2 rounded-md py-3.5 text-sm font-bold uppercase tracking-wider text-white shadow-lg transition-transform active:scale-[0.99] disabled:opacity-50"
+                        className="mt-4 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-md py-3.5 text-sm font-bold uppercase tracking-wider text-white shadow-lg transition-transform active:scale-[0.99] disabled:opacity-50"
                         style={{ background: NARANJA }}
                       >
                         {estaProcesando ? (
@@ -866,7 +886,9 @@ export default function TerminalGalpon({
               COLUMNA DERECHA: RECEPCIÓN DE DEVOLUCIONES (Entradas)
              =============================================================== */}
           <section
-            className="flex flex-col overflow-hidden rounded-md border border-neutral-800 bg-[#1e1e1e] shadow-xl"
+            className={`flex flex-col overflow-hidden rounded-md border border-neutral-800 bg-[#1e1e1e] shadow-xl ${
+              tabMovil === 'recepciones' ? 'flex' : 'hidden lg:flex'
+            }`}
             style={{ borderTop: '4px solid #10b981' }}
           >
             <div
@@ -1020,15 +1042,15 @@ export default function TerminalGalpon({
                         </div>
                       </div>
 
-                      {/* Botones de Recepción: Parcial o Total */}
+                      {/* Botones de Recepción: Parcial o Total (Alto mínimo 48px para uso táctil con guantes o en obra) */}
                       <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <button
                           type="button"
                           disabled={estaProcesando}
                           onClick={() => abrirDevolucionParcial(c)}
-                          className="flex items-center justify-center gap-2 rounded-md border border-purple-500 bg-purple-950/40 py-3 text-xs font-bold uppercase tracking-wider text-purple-300 transition-colors hover:bg-purple-900/60 active:scale-[0.99] disabled:opacity-50"
+                          className="flex min-h-[48px] items-center justify-center gap-2 rounded-md border border-purple-500 bg-purple-950/40 py-3 text-xs sm:text-sm font-bold uppercase tracking-wider text-purple-300 transition-colors hover:bg-purple-900/60 active:scale-[0.99] disabled:opacity-50"
                         >
-                          <PackageCheck size={16} />
+                          <PackageCheck size={18} />
                           <span>Devolución Parcial</span>
                         </button>
 
@@ -1036,14 +1058,14 @@ export default function TerminalGalpon({
                           type="button"
                           disabled={estaProcesando}
                           onClick={() => confirmarRecepcionYRegreso(c)}
-                          className="flex items-center justify-center gap-2 rounded-md bg-emerald-600 py-3 text-xs font-bold uppercase tracking-wider text-white shadow-lg transition-colors hover:bg-emerald-500 active:scale-[0.99] disabled:opacity-50"
+                          className="flex min-h-[48px] items-center justify-center gap-2 rounded-md bg-emerald-600 py-3 text-xs sm:text-sm font-bold uppercase tracking-wider text-white shadow-lg transition-colors hover:bg-emerald-500 active:scale-[0.99] disabled:opacity-50"
                         >
                           {estaProcesando ? (
-                            <Loader2 size={16} className="animate-spin" />
+                            <Loader2 size={18} className="animate-spin" />
                           ) : (
-                            <RotateCcw size={16} />
+                            <RotateCcw size={18} />
                           )}
-                          <span>Todo Devuelto</span>
+                          <span>Confirmar Recepción</span>
                         </button>
                       </div>
                     </article>
@@ -1056,11 +1078,11 @@ export default function TerminalGalpon({
       </main>
 
       {/* =================================================================
-          MODAL DEVOLUCIÓN PARCIAL EN TERMINAL DE GALPÓN
+          MODAL DEVOLUCIÓN (PARCIAL O TOTAL) Y EXTRAVÍOS EN TERMINAL DE GALPÓN
          ================================================================= */}
       {modalDevolucionParcial && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-          <div className="w-full max-w-lg overflow-hidden rounded-md border border-neutral-700 bg-[#1e1e1e] text-white shadow-2xl">
+          <div className="w-full max-w-xl overflow-hidden rounded-md border border-neutral-700 bg-[#1e1e1e] text-white shadow-2xl">
             <div
               className="flex items-center justify-between px-5 py-3.5"
               style={{ background: NEGRO, borderBottom: `3px solid ${NARANJA}` }}
@@ -1068,7 +1090,7 @@ export default function TerminalGalpon({
               <div className="flex items-center gap-2">
                 <PackageCheck size={18} color={NARANJA} />
                 <h3 className="text-sm font-bold uppercase tracking-wider">
-                  Recepción de Devolución Parcial en Galpón
+                  Recepción de Devolución (Parcial o Total) y Extravíos
                 </h3>
               </div>
               <button
@@ -1137,61 +1159,102 @@ export default function TerminalGalpon({
 
               <div>
                 <label className="mb-1.5 block font-bold uppercase tracking-wider text-neutral-300">
-                  Indica cuántas unidades ingresan físicamente al galpón hoy:
+                  Indica unidades que ingresan a galpón y piezas faltantes / extraviadas / dañadas:
                 </label>
-                <div className="max-h-56 divide-y divide-neutral-800 overflow-y-auto rounded border border-neutral-700 bg-[#141414]">
+                <div className="max-h-64 divide-y divide-neutral-800 overflow-y-auto rounded border border-neutral-700 bg-[#141414]">
                   {obtenerItemsContrato(modalDevolucionParcial).map((it, idx) => {
                     const idKey = it.inventario_id
                       ? String(it.inventario_id)
                       : `${it.codigo || 'eq'}_${idx}`
-                    const cantActiva = Number(it.cantidad || 0)
+                    const cantActiva = Math.max(
+                      0,
+                      num(it.cantidad) - num(it.cantidad_devuelta || 0),
+                    )
                     const yaDevuelto = Boolean(it.devuelto)
 
                     return (
-                      <div key={idKey} className="flex items-center justify-between gap-3 p-3">
-                        <div className="min-w-0 flex-1">
-                          <p className="font-bold text-white">{it.material}</p>
-                          <p className="font-mono text-[11px] text-neutral-400">
-                            {it.codigo} · En obra:{' '}
-                            <b className="text-neutral-200">{cantActiva} und.</b>
-                            {yaDevuelto && (
-                              <span className="ml-2 font-bold text-emerald-400">
-                                [Lote ya devuelto]
-                              </span>
-                            )}
-                          </p>
-                        </div>
+                      <div key={idKey} className="space-y-2.5 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-white">{it.material}</p>
+                            <p className="font-mono text-[11px] text-neutral-400">
+                              {it.codigo} · Activas en obra:{' '}
+                              <b className="text-neutral-200">{cantActiva} und.</b>
+                              {yaDevuelto && (
+                                <span className="ml-2 font-bold text-emerald-400">
+                                  [Lote ya procesado: {it.extraviado ? 'Extravío' : 'Devuelto'}]
+                                </span>
+                              )}
+                            </p>
+                          </div>
 
-                        {!yaDevuelto && (
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] text-neutral-400">Entran:</span>
-                            <input
-                              type="text"
-                              inputMode="numeric"
-                              placeholder="0"
-                              value={devolucionCantidades[idKey] || ''}
-                              onChange={(e) => {
-                                const val = limpiarInputEntero(e.target.value)
-                                setDevolucionCantidades((prev) => ({
-                                  ...prev,
-                                  [idKey]: val,
-                                }))
-                              }}
-                              className="w-16 rounded border border-neutral-700 bg-[#0d0d0d] px-2 py-1.5 text-center font-mono text-xs font-bold text-white outline-none focus:border-[#FF5500]"
-                            />
+                          {!yaDevuelto && (
                             <button
                               type="button"
                               onClick={() => {
+                                const falt = Number(devolucionFaltantes[idKey] || 0)
                                 setDevolucionCantidades((prev) => ({
                                   ...prev,
-                                  [idKey]: String(cantActiva),
+                                  [idKey]: String(Math.max(0, cantActiva - falt)),
                                 }))
                               }}
-                              className="rounded border border-neutral-700 bg-neutral-800 px-2 py-1 text-[10px] font-bold text-neutral-300 hover:border-[#FF5500] hover:text-white"
+                              className="rounded border border-neutral-700 bg-neutral-800 px-2.5 py-1 text-[10px] font-bold text-neutral-300 hover:border-[#FF5500] hover:text-white"
                               title="Devolver todo este ítem"
                             >
-                              Todo
+                              Todo ({cantActiva})
                             </button>
+                          )}
+                        </div>
+
+                        {!yaDevuelto && (
+                          <div className="grid gap-2.5 rounded border border-neutral-800 bg-[#0d0d0d] p-2.5 sm:grid-cols-2">
+                            <div>
+                              <label className="mb-1 block text-[10px] font-bold uppercase text-emerald-400">
+                                Piezas Devueltas (Sanas)
+                              </label>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={devolucionCantidades[idKey] || ''}
+                                onChange={(e) => {
+                                  const val = limpiarInputEntero(e.target.value)
+                                  setDevolucionCantidades((prev) => ({
+                                    ...prev,
+                                    [idKey]: val,
+                                  }))
+                                }}
+                                className="w-full rounded border border-neutral-700 bg-[#181818] px-2.5 py-1.5 text-center font-mono text-xs font-bold text-white outline-none focus:border-[#FF5500]"
+                              />
+                            </div>
+
+                            <div>
+                              <label className="mb-1 block text-[10px] font-bold uppercase text-red-400">
+                                Piezas Faltantes / Extraviadas / Dañadas
+                              </label>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                placeholder="0"
+                                value={devolucionFaltantes[idKey] || ''}
+                                onChange={(e) => {
+                                  const val = limpiarInputEntero(e.target.value)
+                                  const faltNum = Number(val || 0)
+                                  setDevolucionFaltantes((prev) => ({
+                                    ...prev,
+                                    [idKey]: val,
+                                  }))
+                                  const devActual = Number(devolucionCantidades[idKey] || 0)
+                                  if (devActual + faltNum > cantActiva) {
+                                    setDevolucionCantidades((prev) => ({
+                                      ...prev,
+                                      [idKey]: String(Math.max(0, cantActiva - faltNum)),
+                                    }))
+                                  }
+                                }}
+                                className="w-full rounded border border-red-800 bg-[#181818] px-2.5 py-1.5 text-center font-mono text-xs font-bold text-red-300 outline-none focus:border-red-500"
+                              />
+                            </div>
                           </div>
                         )}
                       </div>
@@ -1200,18 +1263,18 @@ export default function TerminalGalpon({
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex flex-col-reverse sm:flex-row justify-end gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setModalDevolucionParcial(null)}
-                  className="rounded border border-neutral-700 px-4 py-2 text-xs font-bold text-neutral-300 hover:text-white"
+                  className="flex min-h-[44px] items-center justify-center rounded border border-neutral-700 px-4 py-2 text-xs font-bold text-neutral-300 hover:text-white"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={Boolean(procesandoId)}
-                  className="flex items-center gap-1.5 rounded px-5 py-2 text-xs font-bold text-white shadow"
+                  className="flex min-h-[48px] items-center justify-center gap-1.5 rounded px-5 py-2.5 text-xs sm:text-sm font-bold text-white shadow"
                   style={{ background: NARANJA }}
                 >
                   {procesandoId && <Loader2 size={14} className="animate-spin" />}

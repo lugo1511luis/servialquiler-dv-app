@@ -11,7 +11,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
-import { etiquetaRol, NARANJA, NEGRO } from '../utils/formatters'
+import { etiquetaRol, NARANJA, NEGRO, normalizarRol } from '../utils/formatters'
 import GuiaRapida from '../components/GuiaRapida'
 
 const FORM_INICIAL = {
@@ -42,7 +42,7 @@ export default function UsuariosModule({ usuarios, usuarioActual, onRecargar }) 
       username: u.username ?? '',
       password_hash: u.password_hash ?? '',
       nombre_completo: u.nombre_completo ?? '',
-      rol: u.rol ?? 'Galpon',
+      rol: normalizarRol(u.rol ?? 'Galpon'),
       activo: u.activo !== false,
     })
     setErrorModal(null)
@@ -112,7 +112,7 @@ export default function UsuariosModule({ usuarios, usuarioActual, onRecargar }) 
 
   const tipsUsuarios = [
     'Crea aquí las cuentas de acceso para el personal que trabajará con el sistema.',
-    'Selecciona el rol adecuado: "Administrador" (control total de la empresa y tasa), "Administración" (facturación y cobranza) o "Encargado de Galpón" (solo entradas, salidas y préstamos de equipos, sin ver dinero).',
+    'Selecciona el rol adecuado: "Administrador" (control total de la empresa y tasa), "Facturación" (facturación y cobranza) o "Encargado de Galpón" (solo entradas, salidas y préstamos de equipos, sin ver dinero).',
     'Si un empleado ya no trabaja en la empresa, haz clic sobre el botón "Activo" para desactivar su cuenta y bloquear su entrada.',
   ]
 
@@ -320,7 +320,7 @@ export default function UsuariosModule({ usuarios, usuarioActual, onRecargar }) 
                       className="w-full rounded border border-neutral-300 px-3 py-2 outline-none focus:border-[#FF5500]"
                     >
                       <option value="Administrador">Administrador (Acceso total)</option>
-                      <option value="Administracion">Administración (Facturación y Reportes)</option>
+                      <option value="Facturacion">Facturación (Facturación, Cobranza y Reportes)</option>
                       <option value="Galpon">Encargado de Galpón (Solo Equipos y Devoluciones)</option>
                     </select>
                   </div>

@@ -26,6 +26,64 @@ export const CATEGORIAS_INVENTARIO_DEFAULT = [
   'Maquinaria',
 ]
 
+export const CATEGORIAS_INVENTARIO_STORAGE_KEY = 'servialquiler_categorias_inventario'
+export const PRECIOS_REPOSICION_STORAGE_KEY = 'servialquiler_precios_reposicion'
+
+export const leerCategoriasLocalStorage = () => {
+  try {
+    const raw = localStorage.getItem(CATEGORIAS_INVENTARIO_STORAGE_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return parsed.map((x) => String(x?.nombre ?? x ?? '').trim()).filter(Boolean)
+    }
+  } catch {
+    // Ignorar error de localStorage
+  }
+  return []
+}
+
+export const guardarCategoriasLocalStorage = (lista) => {
+  try {
+    if (Array.isArray(lista)) {
+      localStorage.setItem(CATEGORIAS_INVENTARIO_STORAGE_KEY, JSON.stringify(lista))
+    }
+  } catch {
+    // Ignorar error de localStorage
+  }
+}
+
+export const guardarPrecioReposicionLocal = (idOCodigo, precio) => {
+  if (!idOCodigo) return
+  try {
+    const raw = localStorage.getItem(PRECIOS_REPOSICION_STORAGE_KEY)
+    const mapa = raw ? JSON.parse(raw) : {}
+    mapa[String(idOCodigo)] = num(precio)
+    localStorage.setItem(PRECIOS_REPOSICION_STORAGE_KEY, JSON.stringify(mapa))
+  } catch {
+    // Ignorar
+  }
+}
+
+export const obtenerPrecioReposicionEquipo = (eq) => {
+  if (!eq) return 0
+  if (eq.precio_reposicion_usd !== undefined && eq.precio_reposicion_usd !== null && eq.precio_reposicion_usd !== '') {
+    return num(eq.precio_reposicion_usd)
+  }
+  try {
+    const raw = localStorage.getItem(PRECIOS_REPOSICION_STORAGE_KEY)
+    if (raw) {
+      const mapa = JSON.parse(raw)
+      if (eq.id && mapa[String(eq.id)] !== undefined) return num(mapa[String(eq.id)])
+      if (eq.inventario_id && mapa[String(eq.inventario_id)] !== undefined) return num(mapa[String(eq.inventario_id)])
+      if (eq.codigo && mapa[String(eq.codigo)] !== undefined) return num(mapa[String(eq.codigo)])
+    }
+  } catch {
+    // Ignorar
+  }
+  return 0
+}
+
 export const obtenerCategoriasInventario = (config, inventario = []) => {
   const raw = config?.categorias_inventario
   let lista = []
@@ -49,6 +107,12 @@ export const obtenerCategoriasInventario = (config, inventario = []) => {
     } catch {
       // Ignorar JSON inválido
     }
+  }
+
+  if (lista.length === 0) {
+    lista = leerCategoriasLocalStorage()
+  } else {
+    guardarCategoriasLocalStorage(lista)
   }
 
   const base = lista.length > 0 ? lista : CATEGORIAS_INVENTARIO_DEFAULT
@@ -280,7 +344,7 @@ export const ordenarPorCodigo = (filas) =>
     String(a.codigo ?? '').localeCompare(String(b.codigo ?? ''), 'es', { numeric: true }),
   )
 
-// Normalización de roles amigables: 'Administrador', 'Administracion', 'Galpon' (con compatibilidad 'Patio')
+// Normalización de roles amigables: 'Administrador', 'Facturacion' (compatible con 'Administracion'), 'Galpon' (con compatibilidad 'Patio')
 export const normalizarRol = (rol) => {
   const r = String(rol ?? '')
     .trim()
@@ -288,7 +352,7 @@ export const normalizarRol = (rol) => {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
   if (r.includes('administrador') || r === 'admin' || r === 'superadmin') return 'Administrador'
-  if (r.includes('administracion')) return 'Administracion'
+  if (r.includes('facturacion') || r.includes('administracion') || r.includes('caja')) return 'Facturacion'
   if (r.includes('galpon') || r.includes('patio') || r.includes('operador') || r.includes('despacho'))
     return 'Galpon'
   return 'Administrador'
@@ -297,7 +361,7 @@ export const normalizarRol = (rol) => {
 export const etiquetaRol = (rol) => {
   const r = normalizarRol(rol)
   if (r === 'Administrador') return 'Administrador General'
-  if (r === 'Administracion') return 'Administración y Facturación'
+  if (r === 'Facturacion') return 'Facturación'
   if (r === 'Galpon') return 'Encargado de Galpón'
   return r
 }
@@ -305,17 +369,20 @@ export const etiquetaRol = (rol) => {
 export const permisosPorRol = (rol) => {
   const r = normalizarRol(rol)
   const esGalpon = r === 'Galpon'
+  const esFacturacion = r === 'Facturacion'
   return {
     rol: r,
     esAdmin: r === 'Administrador',
-    esAdministracion: r === 'Administracion',
+    esAdministracion: esFacturacion,
+    esFacturacion: esFacturacion,
     esGalpon: esGalpon,
     puedeEditarTasa: r === 'Administrador',
-    puedeCrearEditarInventario: r === 'Administrador' || r === 'Administracion' || esGalpon,
+    puedeCrearEditarInventario: r === 'Administrador' || esFacturacion || esGalpon,
     puedeEliminarInventario: r === 'Administrador',
     puedeExportarReportes: true,
     puedeVerMontosVentas: !esGalpon,
     puedeGestionarUsuarios: r === 'Administrador',
+    puedeGestionarNomina: r === 'Administrador',
     modulosPermitidos:
       r === 'Administrador'
         ? [
@@ -325,9 +392,10 @@ export const permisosPorRol = (rol) => {
             'prestamos',
             'clientes',
             'reportes',
+            'nomina',
             'usuarios',
           ]
-        : r === 'Administracion'
+        : esFacturacion
           ? ['dashboard', 'inventario', 'alquileres', 'prestamos', 'clientes', 'reportes']
           : ['inventario', 'alquileres', 'prestamos', 'reportes'],
   }
@@ -371,13 +439,21 @@ export const formatearTelefonoWhatsApp = (tel) => {
   return soloDigitos
 }
 
-// Redacta el mensaje profesional de notificación de contrato para WhatsApp
+// Redacta mensajes personalizados de WhatsApp según el estado de cuenta y situación operativa
 export const construirMensajeWhatsAppContrato = ({ contrato, cliente, tasa }) => {
   const nombreCliente =
     cliente?.nombre_razon_social || contrato?.cliente_nombre || 'Estimado(a) Cliente'
   const codigo =
-    contrato?.codigo_contrato || contrato?.numero_contrato || `CT-${contrato?.id}`
+    contrato?.codigo_contrato || contrato?.numero_contrato || `CT-${contrato?.id ?? '001'}`
   const vencimiento = fmtFecha(contrato?.fecha_vencimiento)
+  const diasRestantes = diasEntreHoyY(contrato?.fecha_vencimiento)
+  const estaVencido = diasRestantes !== null && diasRestantes < 0
+  const diasMora = estaVencido ? Math.abs(diasRestantes) : 0
+  const saldoPendiente = num(contrato?.saldo_pendiente_usd)
+  const finalizado =
+    String(contrato?.estado ?? '').toLowerCase().includes('devuelt') ||
+    String(contrato?.estado_despacho ?? '').toLowerCase().includes('devuelt') ||
+    String(contrato?.estado ?? '').toLowerCase().includes('finaliz')
 
   let items = []
   if (Array.isArray(contrato?.items)) {
@@ -397,29 +473,201 @@ export const construirMensajeWhatsAppContrato = ({ contrato, cliente, tasa }) =>
           .join('\n')
       : '• Equipos en obra'
 
-  const saldoPendiente = num(contrato?.saldo_pendiente_usd)
-  let lineaSaldo = ''
-  if (saldoPendiente > 0.009) {
-    const enBs = tasa ? ` (aprox. ${fmtVES(saldoPendiente * tasa)} a la Tasa del Día)` : ''
-    lineaSaldo = `\n💰 Saldo pendiente por liquidar: ${fmtUSD(saldoPendiente)}${enBs}\n`
-  } else {
-    lineaSaldo = '\n✅ Estado de pago: Factura totalmente pagada al día\n'
-  }
+  let mensaje = ''
 
-  const mensaje = `*SERVIALQUILER DV, C.A.*
-*Control de Alquiler y Despacho de Equipos*
+  // CASO A: Con Deuda o Contrato Vencido
+  if (saldoPendiente > 0.009 || estaVencido) {
+    let estadoTexto = ''
+    if (estaVencido) {
+      estadoTexto = `⚠️ *ESTADO:* Contrato vencido con *${diasMora} día(s) de mora* (Venció el: ${vencimiento})`
+    } else {
+      estadoTexto = `⚠️ *ESTADO:* Saldo pendiente por cancelar (Fecha límite: ${vencimiento})`
+    }
 
-Estimado(a) *${nombreCliente}*, le compartimos el resumen de su contrato activo:
+    const enBs = tasa ? ` (Aprox. *${fmtVES(saldoPendiente * tasa)}* a la Tasa del Día)` : ''
 
-*Contrato:* ${codigo}
-*Fecha límite de devolución:* ${vencimiento}
+    mensaje = `*SERVIALQUILER DV, C.A.*
+*Departamento de Administración y Cobranzas*
 
-*Equipos despachados en obra:*
+Estimado(a) *${nombreCliente}*, le saludamos cordialmente. Nos comunicamos para compartirle el estado actual de su contrato de alquiler:
+
+📋 *Contrato:* ${codigo}
+${estadoTexto}
+
+🛠️ *Equipos actualmente en obra:*
 ${resumenEquipos}
-${lineaSaldo}
-Para renovaciones, extensiones de días, devoluciones a galpón o reportes de pago, por favor responda a este mensaje.
+
+💵 *Monto Pendiente por Liquidar:*
+*USD ${fmtUSD(saldoPendiente)}*${enBs}
+
+Agradecemos gestionar la cancelación o renovación del contrato a la brevedad. Puede realizar su pago mediante Efectivo USD, Pago Móvil, Zelle o Transferencia Bancaria y reportar su comprobante por esta vía.
+
+_Atentamente, ServiAlquiler DV, C.A._`
+  }
+  // CASO B: Al Día / Contrato Activo por Vencer
+  else if (!finalizado) {
+    const tiempoTexto =
+      diasRestantes === 0
+        ? '¡Vence hoy!'
+        : diasRestantes === 1
+          ? 'Resta 1 día'
+          : `Restan ${diasRestantes} días`
+
+    mensaje = `*SERVIALQUILER DV, C.A.*
+*Seguimiento Operativo de Obra*
+
+Estimado(a) *${nombreCliente}*, le saludamos cordialmente de ServiAlquiler DV, C.A. Esperamos que nuestros equipos estén apoyando con éxito el avance de su obra.
+
+Le compartimos el recordatorio de su contrato activo:
+
+📋 *Contrato:* ${codigo}
+📅 *Fecha límite de entrega:* ${vencimiento} (${tiempoTexto})
+
+🛠️ *Equipos alquilados en obra:*
+${resumenEquipos}
+
+✅ *Estado Financiero:* Su contrato se encuentra *TOTALMENTE AL DÍA Y CANCELADO*.
+
+Si requiere prorrogar los días de uso en obra o coordinar la recolección/devolución a nuestro galpón, favor indicarnos por esta vía.
 
 _¡Gracias por confiar en ServiAlquiler DV, C.A.!_`
+  }
+  // CASO C: Solvente / Saldo a Favor o $0 deuda
+  else {
+    mensaje = `*SERVIALQUILER DV, C.A.*
+*Constancia de Solvencia y Cierre de Contrato*
+
+Estimado(a) *${nombreCliente}*, le saludamos cordialmente de ServiAlquiler DV, C.A.
+
+Le notificamos formalmente que su contrato *${codigo}* se encuentra *TOTALMENTE SOLVENTE ($0,00 deuda pendiente)* y los equipos han sido recibidos e inspeccionados satisfactoriamente en nuestro galpón.
+
+Agradecemos profundamente su puntualidad, cuidado del material y preferencia comercial. Su línea de despacho queda habilitada con máxima prioridad para sus próximos requerimientos.
+
+_¡ServiAlquiler DV, C.A. — A su entera disposición!_`
+  }
+
+  return encodeURIComponent(mensaje)
+}
+
+// Redacta mensaje de WhatsApp para el módulo de Clientes según su saldo global
+export const construirMensajeWhatsAppCliente = ({ cliente, tasa }) => {
+  const nombreCliente = cliente?.nombre_razon_social || 'Estimado(a) Cliente'
+  const saldo = num(cliente?.saldo_pendiente_usd)
+
+  let mensaje = ''
+  if (saldo > 0.009) {
+    const enBs = tasa ? ` (Aprox. *${fmtVES(saldo * tasa)}* a la Tasa del Día)` : ''
+    mensaje = `*SERVIALQUILER DV, C.A.*
+*Estado de Cuenta Comercial*
+
+Estimado(a) *${nombreCliente}*, le saludamos de la Administración de ServiAlquiler DV, C.A.
+
+Le notificamos que actualmente registra un saldo pendiente consolidado de:
+💵 *USD ${fmtUSD(saldo)}*${enBs}
+
+Agradecemos coordinar la liquidación correspondiente o reportar su comprobante de pago respondiendo a este mensaje.
+
+_Atentamente, Administración · ServiAlquiler DV, C.A._`
+  } else {
+    mensaje = `*SERVIALQUILER DV, C.A.*
+*Constancia de Solvencia Comercial*
+
+Estimado(a) *${nombreCliente}*, le saludamos de ServiAlquiler DV, C.A.
+
+Le confirmamos que su cuenta comercial se encuentra *TOTALMENTE AL DÍA Y SOLVENTE ($0,00 de saldo pendiente)*.
+
+Tenemos inventario disponible en galpón (andamios, puntales, tablas, mezcladoras y maquinaria) con despacho inmediato para sus próximas obras.
+
+_¡Gracias por su preferencia comercial!_`
+  }
+
+  return encodeURIComponent(mensaje)
+}
+
+/**
+ * Calcula el rango de la semana laboral (Lunes a Sábado, 6 días) dada una fecha de referencia.
+ * @param {Date|string} fechaRef
+ * @returns {{ lunesISO: string, sabadoISO: string, textoSemana: string }}
+ */
+export const obtenerRangoSemana = (fechaRef = new Date()) => {
+  const d = new Date(fechaRef)
+  if (isNaN(d.getTime())) return obtenerRangoSemana(new Date())
+
+  const day = d.getDay() // 0 = Domingo, 1 = Lunes, ..., 6 = Sábado
+  const diffLunes = day === 0 ? -6 : 1 - day
+
+  const lunes = new Date(d)
+  lunes.setDate(d.getDate() + diffLunes)
+
+  const sabado = new Date(lunes)
+  sabado.setDate(lunes.getDate() + 5)
+
+  const pad = (n) => String(n).padStart(2, '0')
+  const toISO = (fecha) =>
+    `${fecha.getFullYear()}-${pad(fecha.getMonth() + 1)}-${pad(fecha.getDate())}`
+
+  const fmtHumano = (fecha) =>
+    `${pad(fecha.getDate())}/${pad(fecha.getMonth() + 1)}/${fecha.getFullYear()}`
+
+  return {
+    lunesISO: toISO(lunes),
+    sabadoISO: toISO(sabado),
+    textoSemana: `Semana del ${fmtHumano(lunes)} al ${fmtHumano(sabado)}`,
+  }
+}
+
+/**
+ * Redacta el mensaje de WhatsApp para el comprobante de nómina semanal del trabajador.
+ */
+export const construirMensajeWhatsAppNomina = ({ pago, empleado, tasa }) => {
+  const nombre = empleado?.nombre_completo || pago?.empleado_nombre || 'Trabajador'
+  const cargo = empleado?.cargo || pago?.cargo || 'Colaborador'
+  const semana = pago?.semana_texto || 'Semana Laboral'
+
+  const sueldoBase = num(pago?.sueldo_base_usd)
+  const diasTrabajados = num(pago?.dias_laborados) || 6
+  const diasFaltados = num(pago?.dias_faltados) || 0
+  const descFaltas = num(pago?.deducciones_inasistencia_usd)
+  const detalleFaltas = pago?.detalle_faltas || empleado?.detalle_faltas_semana || ''
+  const bonos = num(pago?.bonos_extras_usd)
+  const adelantos = num(pago?.descuento_adelantos_usd)
+  const netoUSD = num(pago?.neto_pagar_usd)
+  const tasaCalc = num(tasa) || num(pago?.tasa_bcv)
+  const netoVES = tasaCalc > 0 ? netoUSD * tasaCalc : 0
+  const metodo = pago?.metodo_pago || 'Efectivo USD'
+
+  let desgloseFaltas = ''
+  if (diasFaltados > 0) {
+    desgloseFaltas = `\n⚠️ *Inasistencias:* ${diasFaltados} día(s) (-$${fmtUSD(descFaltas)})${detalleFaltas ? ` [${detalleFaltas}]` : ''}`
+  }
+
+  let desgloseAdelantos = ''
+  if (adelantos > 0) {
+    desgloseAdelantos = `\n📉 *Vales / Adelantos descontados:* -$${fmtUSD(adelantos)}`
+  }
+
+  let desgloseBonos = ''
+  if (bonos > 0) {
+    desgloseBonos = `\n⭐ *Bonos / Horas Extra:* +$${fmtUSD(bonos)}`
+  }
+
+  const enBs = tasaCalc > 0 ? `\n🇻🇪 *Equivalente en Bolívares:* ${fmtVES(netoVES)} (Tasa: ${fmtVES(tasaCalc)})` : ''
+
+  const mensaje = `*SERVIALQUILER DV, C.A.*
+*RECIBO DE PAGO DE NÓMINA SEMANAL*
+
+👤 *Trabajador:* ${nombre}
+🏷️ *Cargo:* ${cargo}
+📅 *Período:* ${semana}
+🕒 *Días Laborados:* ${diasTrabajados} de 6 días${desgloseFaltas}
+
+*RESUMEN DE LIQUIDACIÓN:*
+💵 *Sueldo Semanal Base:* $${fmtUSD(sueldoBase)}${desgloseBonos}${desgloseAdelantos}
+-------------------------------------
+💰 *TOTAL NETO PAGADO:* $${fmtUSD(netoUSD)}${enBs}
+💳 *Forma de Pago:* ${metodo}
+
+_Comprobante emitido por el Departamento de Administración y Nómina de ServiAlquiler DV, C.A._`
 
   return encodeURIComponent(mensaje)
 }

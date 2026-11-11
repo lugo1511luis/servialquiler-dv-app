@@ -24,12 +24,15 @@ import {
   fmtUSD,
   fmtVES,
   generarCodigoEquipo,
+  guardarCategoriasLocalStorage,
+  guardarPrecioReposicionLocal,
   limpiarInputDecimal,
   limpiarInputEntero,
   NARANJA,
   NEGRO,
   num,
   obtenerCategoriasInventario,
+  obtenerPrecioReposicionEquipo,
 } from '../utils/formatters'
 import {
   descargarPlantillaInventarioExcel,
@@ -38,7 +41,44 @@ import {
   exportarInventarioPDF,
 } from '../utils/exportadores'
 import { registrarMovimientoKardex } from '../utils/kardex'
+import {
+  calcularStockRealEnObra,
+  reconciliarStockEnSupabase,
+} from '../utils/sincronizacionStock'
 import GuiaRapida from '../components/GuiaRapida'
+
+const guardarEquipoSeguro = async (editandoId, payloadInicial) => {
+  let payload = { ...payloadInicial }
+  for (let intento = 0; intento < 5; intento++) {
+    const res = editandoId
+      ? await supabase
+          .from('inventario')
+          .update(payload)
+          .eq('id', editandoId)
+          .select('*')
+          .maybeSingle()
+      : await supabase.from('inventario').insert([payload]).select('*').maybeSingle()
+    if (!res.error) return res
+    const msg = res.error.message || ''
+    const match =
+      msg.match(/Could not find the '([^']+)' column/i) ||
+      msg.match(/column "([^"]+)" of relation "inventario" does not exist/i)
+    if (match && match[1] && match[1] in payload) {
+      const { [match[1]]: _omit, ...resto } = payload
+      payload = resto
+      continue
+    }
+    return res
+  }
+  return editandoId
+    ? await supabase
+        .from('inventario')
+        .update(payload)
+        .eq('id', editandoId)
+        .select('*')
+        .maybeSingle()
+    : await supabase.from('inventario').insert([payload]).select('*').maybeSingle()
+}
 
 const FORM_INICIAL = {
   codigo: '',
@@ -50,10 +90,12 @@ const FORM_INICIAL = {
   stock_propio_prestado: '',
   stock_externo_prestado: '',
   precio_alquiler_dia_usd: '',
+  precio_reposicion_usd: '',
 }
 
 export default function InventarioModule({
   inventario,
+  alquileres = [],
   tasa,
   permisos,
   config,
@@ -69,18 +111,56 @@ export default function InventarioModule({
   const [importando, setImportando] = useState(false)
   const [errorModal, setErrorModal] = useState(null)
   const [mensajeImportacion, setMensajeImportacion] = useState(null)
+  const [sincronizandoStock, setSincronizandoStock] = useState(false)
+  const [mensajeSincronizacion, setMensajeSincronizacion] = useState(null)
   const inputArchivoRef = useRef(null)
+
+  // Cálculo en vivo de piezas actualmente en obra según contratos activos
+  const stockCalculado = useMemo(() => calcularStockRealEnObra(alquileres), [alquileres])
+
+  // Reconciliación manual o automática del stock
+  const sincronizarStockReal = async () => {
+    setSincronizandoStock(true)
+    setMensajeSincronizacion(null)
+    try {
+      const res = await reconciliarStockEnSupabase({ inventario, alquileres })
+      setMensajeSincronizacion({
+        tipo: 'exito',
+        texto: `Stock sincronizado: ${res.actualizadosCount} equipo(s) actualizados. Piezas en obra reales: ${res.totalPiezasEnObra} en ${res.contratosActivosCount} contrato(s) activos.`,
+      })
+      if (onRecargar) {
+        await onRecargar()
+      }
+    } catch (err) {
+      setMensajeSincronizacion({
+        tipo: 'error',
+        texto: `Error al sincronizar el stock: ${err.message}`,
+      })
+    } finally {
+      setSincronizandoStock(false)
+    }
+  }
 
   // Gestor dinámico de categorías
   const [modalCategoriasAbierto, setModalCategoriasAbierto] = useState(false)
   const [nuevaCatTexto, setNuevaCatTexto] = useState('')
   const [guardandoCat, setGuardandoCat] = useState(false)
   const [errorCat, setErrorCat] = useState(null)
+  const [categoriasLocales, setCategoriasLocales] = useState(null)
 
-  const categorias = useMemo(
-    () => obtenerCategoriasInventario(config, inventario),
-    [config, inventario],
-  )
+  const categorias = useMemo(() => {
+    const base = obtenerCategoriasInventario(config, inventario)
+    if (Array.isArray(categoriasLocales) && categoriasLocales.length > 0) {
+      const conjunto = new Set(categoriasLocales)
+      inventario.forEach((i) => {
+        if (i?.categoria && typeof i.categoria === 'string' && i.categoria.trim()) {
+          conjunto.add(i.categoria.trim())
+        }
+      })
+      return Array.from(conjunto)
+    }
+    return base
+  }, [config, inventario, categoriasLocales])
 
   const filtrado = useMemo(() => {
     const q = busqueda.trim().toLowerCase()
@@ -108,8 +188,11 @@ export default function InventarioModule({
   // ---- Funciones del Gestor Dinámico de Categorías -------------------------
   const agregarCategoria = async (e) => {
     if (e) e.preventDefault()
-    const limpia = nuevaCatTexto.trim()
-    if (!limpia) return
+    const limpia = String(nuevaCatTexto ?? '').trim()
+    if (!limpia) {
+      setErrorCat('Escribe el nombre de la nueva categoría antes de agregar.')
+      return
+    }
 
     const existe = categorias.some((c) => c.toLowerCase() === limpia.toLowerCase())
     if (existe) {
@@ -118,22 +201,24 @@ export default function InventarioModule({
     }
 
     const nuevaLista = [...categorias, limpia]
-    setGuardandoCat(true)
     setErrorCat(null)
+    setNuevaCatTexto('')
+    setCategoriasLocales(nuevaLista)
+    guardarCategoriasLocalStorage(nuevaLista)
+
+    // Si el formulario de equipo está abierto, seleccionarla automáticamente
+    if (modalAbierto) {
+      setForm((prev) => ({ ...prev, categoria: limpia }))
+    }
 
     if (onGuardarCategorias) {
+      setGuardandoCat(true)
       const err = await onGuardarCategorias(nuevaLista)
+      setGuardandoCat(false)
       if (err) {
         setErrorCat(err)
-      } else {
-        setNuevaCatTexto('')
-        // Si el formulario de equipo está abierto, seleccionarla automáticamente
-        if (modalAbierto) {
-          setForm((prev) => ({ ...prev, categoria: limpia }))
-        }
       }
     }
-    setGuardandoCat(false)
   }
 
   const eliminarCategoria = async (catEliminar) => {
@@ -151,15 +236,18 @@ export default function InventarioModule({
     }
 
     const nuevaLista = categorias.filter((c) => c !== catEliminar)
-    setGuardandoCat(true)
     setErrorCat(null)
+    setCategoriasLocales(nuevaLista)
+    guardarCategoriasLocalStorage(nuevaLista)
     if (onGuardarCategorias) {
+      setGuardandoCat(true)
       await onGuardarCategorias(nuevaLista)
+      setGuardandoCat(false)
     }
-    setGuardandoCat(false)
   }
 
   const abrirEditar = (fila) => {
+    const precioRep = obtenerPrecioReposicionEquipo(fila)
     setEditandoId(fila.id)
     setForm({
       codigo: fila.codigo ?? '',
@@ -189,6 +277,7 @@ export default function InventarioModule({
         fila.precio_alquiler_dia_usd !== null && fila.precio_alquiler_dia_usd !== undefined
           ? String(fila.precio_alquiler_dia_usd)
           : '',
+      precio_reposicion_usd: precioRep > 0 ? String(precioRep) : '',
     })
     setErrorModal(null)
     setModalAbierto(true)
@@ -209,6 +298,7 @@ export default function InventarioModule({
       form.stock_propio_disponible === ''
         ? stockTotal
         : Number(form.stock_propio_disponible || 0)
+    const precioReposicion = Number(form.precio_reposicion_usd || 0)
 
     const payload = {
       codigo: codigoFinal,
@@ -220,20 +310,14 @@ export default function InventarioModule({
       stock_propio_prestado: Number(form.stock_propio_prestado || 0),
       stock_externo_prestado: Number(form.stock_externo_prestado || 0),
       precio_alquiler_dia_usd: Number(form.precio_alquiler_dia_usd || 0),
+      precio_reposicion_usd: precioReposicion,
     }
 
     const previo = editandoId
       ? inventario.find((i) => String(i.id) === String(editandoId))
       : null
 
-    const res = editandoId
-      ? await supabase
-          .from('inventario')
-          .update(payload)
-          .eq('id', editandoId)
-          .select('*')
-          .maybeSingle()
-      : await supabase.from('inventario').insert([payload]).select('*').maybeSingle()
+    const res = await guardarEquipoSeguro(editandoId, payload)
 
     if (res.error) {
       setGuardando(false)
@@ -242,6 +326,8 @@ export default function InventarioModule({
     }
 
     const eqId = res.data?.id ?? editandoId
+    if (eqId) guardarPrecioReposicionLocal(eqId, precioReposicion)
+    if (codigoFinal) guardarPrecioReposicionLocal(codigoFinal, precioReposicion)
     const diffCantidad = previo
       ? Math.abs(num(payload.stock_propio_disponible) - num(previo.stock_propio_disponible)) ||
         num(payload.stock_propio_disponible)
@@ -484,6 +570,20 @@ export default function InventarioModule({
                   )}
                   <span>Importar Excel</span>
                 </button>
+                <button
+                  type="button"
+                  disabled={sincronizandoStock}
+                  onClick={sincronizarStockReal}
+                  className="flex items-center gap-1.5 rounded border border-neutral-700 bg-neutral-900 px-2.5 py-1.5 text-xs font-bold text-neutral-200 transition-colors hover:border-[#FF5500] hover:text-white disabled:opacity-50"
+                  title="Sincronizar stock alquilado y disponible según los contratos activos en calle"
+                >
+                  <RefreshCw
+                    size={13}
+                    className={sincronizandoStock ? 'animate-spin' : ''}
+                    color={NARANJA}
+                  />
+                  <span>{sincronizandoStock ? 'Sincronizando...' : 'Sincronizar Stock Real'}</span>
+                </button>
               </>
             )}
 
@@ -538,6 +638,32 @@ export default function InventarioModule({
           </div>
         </div>
 
+        {mensajeSincronizacion && (
+          <div
+            className={`flex items-center justify-between gap-2 rounded border px-3 py-2 text-xs font-semibold ${
+              mensajeSincronizacion.tipo === 'exito'
+                ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                : 'border-red-300 bg-red-50 text-red-800'
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              {mensajeSincronizacion.tipo === 'exito' ? (
+                <CheckCircle2 size={15} className="text-emerald-600" />
+              ) : (
+                <TriangleAlert size={15} className="text-red-600" />
+              )}
+              <span>{mensajeSincronizacion.texto}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setMensajeSincronizacion(null)}
+              className="rounded p-0.5 text-neutral-400 hover:text-neutral-700"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         {/* Tabla amigable */}
         {inventario.length === 0 ? (
           <p className="p-8 text-center text-xs text-neutral-500">
@@ -563,9 +689,16 @@ export default function InventarioModule({
               </thead>
               <tbody className="divide-y divide-neutral-200">
                 {filtrado.map((f) => {
-                  const disponible = num(f.stock_propio_disponible)
+                  const idStr = String(f.id)
+                  const codStr = String(f.codigo || '').trim().toUpperCase()
+                  const alquiladoReal =
+                    stockCalculado.mapaPorId.get(idStr) ??
+                    (codStr ? stockCalculado.mapaPorCodigo.get(codStr) : null) ??
+                    num(f.stock_propio_alquilado)
+                  const totalPropio = num(f.stock_propio_total)
                   const propios = num(f.stock_propio_prestado)
                   const externos = num(f.stock_externo_prestado)
+                  const disponible = Math.max(0, totalPropio - alquiladoReal - propios)
                   const precio = num(f.precio_alquiler_dia_usd)
                   return (
                     <tr key={f.id} className="transition-colors hover:bg-orange-50/50">
@@ -605,7 +738,7 @@ export default function InventarioModule({
                         className={`${td} text-right font-mono font-bold`}
                         style={{ color: NARANJA }}
                       >
-                        {fmtNum(f.stock_propio_alquilado)}
+                        {fmtNum(alquiladoReal)}
                       </td>
                       <td className={`${td} text-right font-mono`}>
                         <div className="font-bold">{fmtNum(propios + externos)}</div>
@@ -749,7 +882,7 @@ export default function InventarioModule({
                   />
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-3">
+                <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="mb-1 block font-bold uppercase text-neutral-600">
                       Total Propio
@@ -790,6 +923,9 @@ export default function InventarioModule({
                       className="w-full rounded border border-neutral-300 px-3 py-2 font-mono placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
                     />
                   </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
                   <div>
                     <label className="mb-1 block font-bold uppercase text-neutral-600">
                       Precio Alquiler / Día (USD)
@@ -806,6 +942,25 @@ export default function InventarioModule({
                         })
                       }
                       className="w-full rounded border border-neutral-300 px-3 py-2 font-mono placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block font-bold uppercase text-neutral-600">
+                      Precio Reposición / Extravío (USD) <span className="text-[10px] font-normal text-neutral-400">(Opcional)</span>
+                    </label>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Ej. 45.00"
+                      value={form.precio_reposicion_usd}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          precio_reposicion_usd: limpiarInputDecimal(e.target.value),
+                        })
+                      }
+                      className="w-full rounded border border-neutral-300 px-3 py-2 font-mono placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
+                      title="Valor de indemnización por pieza en caso de pérdida o extravío en obra"
                     />
                   </div>
                 </div>
@@ -928,24 +1083,36 @@ export default function InventarioModule({
                 </p>
 
                 {/* Formulario para agregar nueva categoría */}
-                <form onSubmit={agregarCategoria} className="flex gap-2">
+                <div className="flex gap-2">
                   <input
                     type="text"
+                    autoFocus
                     value={nuevaCatTexto}
-                    onChange={(e) => setNuevaCatTexto(e.target.value)}
+                    onChange={(e) => {
+                      setNuevaCatTexto(e.target.value)
+                      if (errorCat) setErrorCat(null)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        agregarCategoria(e)
+                      }
+                    }}
                     placeholder="Nombre de la nueva categoría (ej. Motores)"
-                    className="flex-1 rounded border border-neutral-300 px-3 py-2 text-xs font-bold outline-none focus:border-[#FF5500]"
+                    className="flex-1 rounded border border-neutral-300 bg-white px-3 py-2 text-xs font-bold text-neutral-900 outline-none focus:border-[#FF5500]"
                   />
                   <button
-                    type="submit"
-                    disabled={guardandoCat || !nuevaCatTexto.trim()}
+                    type="button"
+                    onClick={agregarCategoria}
+                    disabled={guardandoCat}
                     className="flex items-center gap-1.5 rounded px-4 py-2 text-xs font-bold text-white transition-opacity hover:opacity-95 disabled:opacity-50"
                     style={{ background: NARANJA }}
                   >
                     {guardandoCat ? <Loader2 size={13} className="animate-spin" /> : <Plus size={13} />}
-                    <span>Agregar</span>
+                    <span>+ Agregar</span>
                   </button>
-                </form>
+                </div>
 
                 {/* Lista de categorías activas */}
                 <div className="space-y-1.5">

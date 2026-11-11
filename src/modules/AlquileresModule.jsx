@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import {
   Plus,
+  Minus,
   Truck,
   CalendarPlus,
   RotateCcw,
@@ -36,6 +37,7 @@ import {
   NARANJA,
   NEGRO,
   num,
+  obtenerPrecioReposicionEquipo,
   sumarDiasISO,
   WhatsAppIcon,
 } from '../utils/formatters'
@@ -175,9 +177,11 @@ export default function AlquileresModule({
     { id: 'pa-1', metodo: metodosPago[0] || 'Efectivo USD', monto: '' },
   ])
 
-  // Modal Devolución Parcial
+  // Modal Devolución Parcial o Total + Extravíos
   const [modalDevolucionParcial, setModalDevolucionParcial] = useState(null)
   const [devolucionCantidades, setDevolucionCantidades] = useState({})
+  const [devolucionFaltantes, setDevolucionFaltantes] = useState({})
+  const [devolucionPreciosRep, setDevolucionPreciosRep] = useState({})
   const [fechaDevolucionParcial, setFechaDevolucionParcial] = useState(() => hoyISO())
 
   const [procesando, setProcesando] = useState(false)
@@ -285,7 +289,6 @@ export default function AlquileresModule({
   const fleteUSD = requiereFlete ? Number(costoFleteUsd || 0) : 0
   const garantiaUSD = Number(depositoGarantiaUsd || 0)
   const totalContratoUSD = Number((subtotalEquiposUSD + fleteUSD).toFixed(2))
-  const totalConGarantiaUSD = Number((totalContratoUSD + garantiaUSD).toFixed(2))
 
   // Cálculos de Abono y Restante por Cobrar en Facturación (Suma automática en tiempo real)
   const abonoHoyNum = useMemo(() => {
@@ -362,6 +365,35 @@ export default function AlquileresModule({
     setPagosFacturador([
       { id: `pf-${Date.now()}`, metodo: metodosPago[0] || 'Efectivo USD', monto: '' },
     ])
+  }
+
+  const incrementarEquipo = (eq) => {
+    const dispPropio = num(eq.stock_propio_disponible)
+    const yaEnLista = lineas
+      .filter((l) => String(l.inventario_id) === String(eq.id))
+      .reduce((s, l) => s + Number(l.cantidad || 0), 0)
+
+    if (yaEnLista + 1 > dispPropio) {
+      setAvisoAliado({
+        equipo: eq,
+        requerido: yaEnLista + 1,
+        disponiblePropio: dispPropio,
+        disponibleExterno: num(eq.stock_externo_prestado),
+      })
+      return
+    }
+    agregarAlDespacho(eq)
+  }
+
+  const decrementarEquipo = (eqId) => {
+    const item = lineas.find((l) => String(l.inventario_id) === String(eqId))
+    if (!item) return
+    const actual = Number(item.cantidad || 0)
+    if (actual <= 1) {
+      quitarLinea(eqId)
+    } else {
+      cambiarCantidadLinea(eqId, String(actual - 1))
+    }
   }
 
   // Cálculos y acciones para Modal de Abonos Dinámicos
@@ -796,16 +828,37 @@ export default function AlquileresModule({
   }
 
   // ---- Modal 2: Postergar / Extender Días de Alquiler -----------------------
+  // Calcula el costo diario adicional ÚNICAMENTE multiplicando los días extra por las piezas
+  // que siguen activas en obra (cantidad_actual_en_obra = cantidad_inicial - cantidad_devuelta),
+  // ignorando los materiales ya devueltos.
   const calculosProrroga = useMemo(() => {
-    if (!modalProrroga) return { extraDias: 0, tarifaDiaria: 0, montoExtraUSD: 0, nuevaFecha: '' }
+    if (!modalProrroga) {
+      return {
+        extraDias: 0,
+        tarifaDiaria: 0,
+        piezasActivasEnObra: 0,
+        montoExtraUSD: 0,
+        nuevaFecha: '',
+        abonoExt: 0,
+        deudaExtra: 0,
+      }
+    }
     const extraDias = Math.max(0, Number(diasExtra || 0))
-    const items = obtenerItemsContrato(modalProrroga)
+    const items = obtenerItemsConRespaldo(modalProrroga)
+    const itemsActivos = items.filter((it) => !it.devuelto)
+    const piezasActivasEnObra = itemsActivos.reduce(
+      (s, it) => s + Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0)),
+      0,
+    )
     const tarifaDiaria =
       items.length > 0
-        ? items.reduce(
-            (s, it) => s + num(it.cantidad) * num(it.precio_alquiler_dia_usd),
-            0,
-          )
+        ? itemsActivos.reduce((s, it) => {
+            const cantActiva = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
+            const precioDia = num(
+              it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
+            )
+            return s + cantActiva * precioDia
+          }, 0)
         : num(modalProrroga.total_contrato_usd) /
           Math.max(1, num(modalProrroga.dias_alquiler) || 1)
     const montoExtraUSD = Number((tarifaDiaria * extraDias).toFixed(2))
@@ -815,7 +868,8 @@ export default function AlquileresModule({
 
     return {
       extraDias,
-      tarifaDiaria,
+      tarifaDiaria: Number(tarifaDiaria.toFixed(2)),
+      piezasActivasEnObra,
       montoExtraUSD,
       nuevaFecha,
       abonoExt,
@@ -884,72 +938,35 @@ export default function AlquileresModule({
     onRecargarTodo()
   }
 
-  // Devolver a Galpón
-  const finalizarContrato = async (contrato) => {
-    const items = obtenerItemsConRespaldo(contrato)
-    const cli = mapaClientes.get(String(contrato.cliente_id))
-    const refContrato =
-      contrato.codigo_contrato ||
-      contrato.numero_contrato ||
-      `CT-${String(contrato.id ?? '').slice(0, 6).toUpperCase()}`
-
-    const ok = window.confirm(
-      `¿Confirmar que el cliente regresó todos los equipos al galpón para el contrato ${refContrato}?`,
-    )
-    if (!ok) return
-
-    setProcesando(true)
-    for (const l of items) {
-      const eqActual = inventario.find(
-        (i) =>
-          String(i.id) === String(l.inventario_id) ||
-          (l.codigo && i.codigo === l.codigo),
-      )
-      if (eqActual) {
-        const cant = num(l.cantidad)
-        const nuevoDisp = num(eqActual.stock_propio_disponible) + cant
-        const nuevoAlq = Math.max(0, num(eqActual.stock_propio_alquilado) - cant)
-        await supabase
-          .from('inventario')
-          .update({
-            stock_propio_disponible: nuevoDisp,
-            stock_propio_alquilado: nuevoAlq,
-          })
-          .eq('id', eqActual.id)
-
-        await registrarMovimientoKardex({
-          inventario_id: eqActual.id,
-          codigo: eqActual.codigo,
-          material: eqActual.material,
-          tipo_movimiento: 'ENTRADA (Devolución a Galpón)',
-          cantidad: cant,
-          stock_resultante: nuevoDisp,
-          referencia_documento: refContrato,
-          cliente_nombre:
-            cli?.nombre_razon_social || contrato.cliente_nombre || 'Cliente de Obra',
-        })
-      }
-    }
-
-    await actualizarContratoSeguro(contrato.id, {
-      estado: 'Devuelto a Galpón',
-      estado_despacho: 'Devuelto a Galpón',
-    })
-    setProcesando(false)
-    onRecargarTodo()
+  // Devolver a Galpón (Abre el modal de Devolución prellenado al 100% para permitir reportar extravíos si los hubiera)
+  const finalizarContrato = (contrato) => {
+    abrirDevolucionParcial(contrato, true)
   }
 
-  // ---- Devolución Parcial de Equipos de Obra --------------------------------
-  const abrirDevolucionParcial = (c) => {
+  // ---- Devolución Parcial o Total de Equipos de Obra + Registro de Extravíos -
+  const abrirDevolucionParcial = (c, prellenarTotal = false) => {
     setModalDevolucionParcial(c)
     setFechaDevolucionParcial(hoyISO())
     const items = obtenerItemsConRespaldo(c)
     const initCant = {}
+    const initFalt = {}
+    const initPreciosRep = {}
     items.forEach((it, idx) => {
       const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
-      initCant[idKey] = ''
+      const cantActiva = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
+      initCant[idKey] = !it.devuelto && prellenarTotal && cantActiva > 0 ? String(cantActiva) : ''
+      initFalt[idKey] = ''
+      const eqActual = inventario.find(
+        (i) =>
+          String(i.id) === String(it.inventario_id) ||
+          (it.codigo && i.codigo === it.codigo),
+      )
+      const pRep = obtenerPrecioReposicionEquipo(eqActual || it)
+      initPreciosRep[idKey] = pRep > 0 ? String(pRep) : ''
     })
     setDevolucionCantidades(initCant)
+    setDevolucionFaltantes(initFalt)
+    setDevolucionPreciosRep(initPreciosRep)
     setErrorMsg(null)
   }
 
@@ -962,25 +979,30 @@ export default function AlquileresModule({
     const fechaDev = fechaDevolucionParcial || hoyISO()
     const diasUso = diasEntreFechas(contrato.fecha_inicio, fechaDev)
 
-    // Validar cantidades a devolver
+    // Validar cantidades a devolver y piezas faltantes
     let totalDevolviendo = 0
+    let totalFaltantes = 0
     for (let idx = 0; idx < items.length; idx++) {
       const it = items[idx]
       if (it.devuelto) continue
       const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
       const cantADevolver = Number(devolucionCantidades[idKey] || 0)
-      const cantActiva = Number(it.cantidad || 0)
-      if (cantADevolver > cantActiva) {
+      const cantFaltante = Number(devolucionFaltantes[idKey] || 0)
+      const cantActiva = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
+      if (cantADevolver + cantFaltante > cantActiva) {
         setErrorMsg(
-          `No puedes devolver más unidades (${cantADevolver}) de las que están en obra (${cantActiva}) para ${it.material}.`,
+          `La suma de unidades devueltas (${cantADevolver}) + faltantes/extraviadas (${cantFaltante}) supera las unidades activas en obra (${cantActiva}) para ${it.material}.`,
         )
         return
       }
       totalDevolviendo += cantADevolver
+      totalFaltantes += cantFaltante
     }
 
-    if (totalDevolviendo <= 0) {
-      setErrorMsg('Indica la cantidad a devolver de al menos un equipo.')
+    if (totalDevolviendo + totalFaltantes <= 0) {
+      setErrorMsg(
+        'Indica la cantidad a devolver o las piezas faltantes/extraviadas de al menos un equipo.',
+      )
       return
     }
 
@@ -997,95 +1019,142 @@ export default function AlquileresModule({
 
     const nuevosItems = []
     let todasDevueltas = true
+    let totalCargoExtravioUSD = 0
 
     for (let idx = 0; idx < items.length; idx++) {
       const it = items[idx]
       const idKey = it.inventario_id ? String(it.inventario_id) : `${it.codigo || 'eq'}_${idx}`
       const cantADevolver = Number(devolucionCantidades[idKey] || 0)
-      const cantActual = Number(it.cantidad || 0)
+      const cantFaltante = Number(devolucionFaltantes[idKey] || 0)
+      const cantProcesada = cantADevolver + cantFaltante
+      const cantActual = Math.max(0, num(it.cantidad) - num(it.cantidad_devuelta || 0))
       const precioDia = num(
         it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
       )
+
+      const eqActual = inventario.find(
+        (i) =>
+          String(i.id) === String(it.inventario_id) ||
+          (it.codigo && i.codigo === it.codigo),
+      )
+      const precioRepUnit = Number(
+        devolucionPreciosRep[idKey] !== undefined && devolucionPreciosRep[idKey] !== ''
+          ? devolucionPreciosRep[idKey]
+          : obtenerPrecioReposicionEquipo(eqActual || it),
+      )
+      const cargoExtravioItem = Number((cantFaltante * precioRepUnit).toFixed(2))
+      totalCargoExtravioUSD = Number((totalCargoExtravioUSD + cargoExtravioItem).toFixed(2))
 
       if (it.devuelto) {
         nuevosItems.push(it)
         continue
       }
 
-      if (cantADevolver <= 0) {
+      if (cantProcesada <= 0) {
         nuevosItems.push(it)
         todasDevueltas = false
-      } else if (cantADevolver === cantActual) {
-        // Se devuelve la totalidad de esta línea
-        const subtotalEfectivo = Number((cantActual * precioDia * diasUso).toFixed(2))
-        nuevosItems.push({
-          ...it,
-          devuelto: true,
-          fecha_devolucion: fechaDev,
-          dias_efectivos: diasUso,
-          subtotal_item_usd: subtotalEfectivo,
-          estado: 'Devuelto Parcial',
-        })
       } else {
-        // Se devuelve una parte (se divide la línea en devuelta y activa)
-        todasDevueltas = false
-        const cantRestante = cantActual - cantADevolver
-        const subtotalEfectivo = Number((cantADevolver * precioDia * diasUso).toFixed(2))
+        // 1. Registrar porción devuelta física
+        if (cantADevolver > 0) {
+          const subtotalEfectivo = Number((cantADevolver * precioDia * diasUso).toFixed(2))
+          nuevosItems.push({
+            ...it,
+            cantidad: cantADevolver,
+            devuelto: true,
+            fecha_devolucion: fechaDev,
+            dias_efectivos: diasUso,
+            subtotal_item_usd: subtotalEfectivo,
+            estado: cantProcesada === cantActual ? 'Devuelto a Galpón' : 'Devuelto Parcial',
+          })
+        }
 
-        // Línea devuelta
-        nuevosItems.push({
-          ...it,
-          cantidad: cantADevolver,
-          devuelto: true,
-          fecha_devolucion: fechaDev,
-          dias_efectivos: diasUso,
-          subtotal_item_usd: subtotalEfectivo,
-          estado: 'Devuelto Parcial',
-        })
+        // 2. Registrar porción extraviada / dañada
+        if (cantFaltante > 0) {
+          const subtotalAlquilerFaltante = Number((cantFaltante * precioDia * diasUso).toFixed(2))
+          const subtotalConIndemnizacion = Number(
+            (subtotalAlquilerFaltante + cargoExtravioItem).toFixed(2),
+          )
+          nuevosItems.push({
+            ...it,
+            cantidad: cantFaltante,
+            devuelto: true,
+            extraviado: true,
+            cantidad_extraviada: cantFaltante,
+            precio_reposicion_usd: precioRepUnit,
+            cargo_reposicion_usd: cargoExtravioItem,
+            fecha_devolucion: fechaDev,
+            dias_efectivos: diasUso,
+            subtotal_item_usd: subtotalConIndemnizacion,
+            estado: 'EXTRAVÍO / NO DEVUELTO EN OBRA',
+          })
+        }
 
-        // Línea que sigue en obra
-        nuevosItems.push({
-          ...it,
-          cantidad: cantRestante,
-          devuelto: false,
-        })
+        // 3. Si quedan piezas activas en obra, mantener línea activa
+        const cantRestante = cantActual - cantProcesada
+        if (cantRestante > 0) {
+          todasDevueltas = false
+          nuevosItems.push({
+            ...it,
+            cantidad: cantRestante,
+            devuelto: false,
+          })
+        }
       }
 
-      // Reintegrar stock a inventario y registrar kardex
-      if (cantADevolver > 0) {
-        const eqActual = inventario.find(
-          (i) =>
-            String(i.id) === String(it.inventario_id) ||
-            (it.codigo && i.codigo === it.codigo),
-        )
-        if (eqActual) {
-          const nuevoDisp = num(eqActual.stock_propio_disponible) + cantADevolver
-          const nuevoAlq = Math.max(0, num(eqActual.stock_propio_alquilado) - cantADevolver)
+      // Actualizar inventario y registrar movimientos en Kardex
+      if (eqActual && (cantADevolver > 0 || cantFaltante > 0)) {
+        const dispActual = num(eqActual.stock_propio_disponible)
+        const alqActual = num(eqActual.stock_propio_alquilado)
+        const totalPropioActual = num(eqActual.stock_propio_total)
 
-          await supabase
-            .from('inventario')
-            .update({
-              stock_propio_disponible: nuevoDisp,
-              stock_propio_alquilado: nuevoAlq,
-            })
-            .eq('id', eqActual.id)
+        // Las piezas devueltas entran al disponible; si las faltantes superan lo alquilado, se descuentan del disponible general
+        const excesoSobreAlquilado = Math.max(0, cantProcesada - alqActual)
+        const nuevoDisp = Math.max(0, dispActual + cantADevolver - excesoSobreAlquilado)
+        const nuevoAlq = Math.max(0, alqActual - cantProcesada)
+        const nuevoTotalPropio = Math.max(0, totalPropioActual - cantFaltante)
 
+        await supabase
+          .from('inventario')
+          .update({
+            stock_propio_total: nuevoTotalPropio,
+            stock_propio_disponible: nuevoDisp,
+            stock_propio_alquilado: nuevoAlq,
+          })
+          .eq('id', eqActual.id)
+
+        if (cantADevolver > 0) {
           await registrarMovimientoKardex({
             inventario_id: eqActual.id,
             codigo: eqActual.codigo,
             material: eqActual.material,
-            tipo_movimiento: 'ENTRADA (Devolución Parcial de Galpón)',
+            tipo_movimiento: todasDevueltas
+              ? 'ENTRADA (Devolución a Galpón)'
+              : 'ENTRADA (Devolución Parcial de Galpón)',
             cantidad: cantADevolver,
             stock_resultante: nuevoDisp,
             referencia_documento: refContrato,
             cliente_nombre: nombreCliente,
-            observaciones: `Devolución parcial de obra (${cantADevolver} und. recibidas tras ${diasUso} días de uso). Recibido por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
+            observaciones: `Devolución de obra (${cantADevolver} und. recibidas tras ${diasUso} días de uso). Recibido por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
+          })
+        }
+
+        if (cantFaltante > 0) {
+          await registrarMovimientoKardex({
+            inventario_id: eqActual.id,
+            codigo: eqActual.codigo,
+            material: eqActual.material,
+            tipo_movimiento: 'EXTRAVÍO / NO DEVUELTO EN OBRA',
+            cantidad: cantFaltante,
+            stock_resultante: nuevoDisp,
+            referencia_documento: refContrato,
+            cliente_nombre: nombreCliente,
+            observaciones: `EXTRAVÍO / NO DEVUELTO EN OBRA (${cantFaltante} pza(s) faltantes/dañadas). Cargo de reposición: $${cargoExtravioItem.toFixed(2)}. Reportado por ${usuario?.nombre_completo || usuario?.username || 'Operador'}`,
           })
         }
       }
     }
 
-    // Recalcular montos del contrato
+    // Recalcular montos del contrato incluyendo indemnización por extravío
     const flete = contrato.requiere_flete ? num(contrato.costo_flete_usd) : 0
     const diasContrato = num(contrato.dias_alquiler) || 1
     const nuevoSubtotalEquipos = nuevosItems.reduce((acc, it) => {
@@ -1095,18 +1164,18 @@ export default function AlquileresModule({
       if (it.devuelto) {
         return (
           acc +
-          (num(it.subtotal_item_usd) ||
-            num(it.cantidad) * precio * (num(it.dias_efectivos) || diasUso))
+          (it.subtotal_item_usd !== undefined
+            ? num(it.subtotal_item_usd)
+            : num(it.cantidad) * precio * (num(it.dias_efectivos) || diasUso))
         )
       }
       return acc + num(it.cantidad) * precio * diasContrato
     }, 0)
 
     const nuevoTotalContrato = Number((nuevoSubtotalEquipos + flete).toFixed(2))
-    const totalAnterior = num(contrato.total_contrato_usd)
-    const reduccionTotal = Math.max(0, Number((totalAnterior - nuevoTotalContrato).toFixed(2)))
-
     const datosPago = obtenerDatosPagoContrato(contrato)
+    const diferenciaTotal = Number((nuevoTotalContrato - datosPago.total).toFixed(2))
+
     const nuevoRestante = Math.max(0, Number((nuevoTotalContrato - datosPago.pagado).toFixed(2)))
     const nuevoEstadoPago = calcularEstadoPago(datosPago.pagado, nuevoRestante)
 
@@ -1137,11 +1206,11 @@ export default function AlquileresModule({
     }
     setVersionRespaldo((v) => v + 1)
 
-    // Ajustar deuda del cliente en clientes si se redujo el total
-    if (cli && reduccionTotal > 0) {
+    // Actualizar saldo_pendiente_usd del cliente (suma cargo de reposición o descuenta ajuste por entrega anticipada)
+    if (cli && Math.abs(diferenciaTotal) > 0.009) {
       const nuevoSaldoCliente = Math.max(
         0,
-        Number((num(cli.saldo_pendiente_usd) - reduccionTotal).toFixed(2)),
+        Number((num(cli.saldo_pendiente_usd) + diferenciaTotal).toFixed(2)),
       )
       await supabase
         .from('clientes')
@@ -1217,85 +1286,320 @@ export default function AlquileresModule({
   const td = 'whitespace-nowrap px-3.5 py-2.5 text-xs'
 
   // ===========================================================================
-  // VISTA FACTURADOR Y SALIDA DE EQUIPOS (PANTALLA DIVIDIDA)
+  // VISTA FACTURADOR Y SALIDA DE EQUIPOS (REDISEÑO EN 3 PASOS VISUALES)
   // ===========================================================================
   if (vistaFacturador) {
     return (
-      <div className="space-y-3">
-        {/* Barra Superior */}
+      <form onSubmit={emitirContratoYDespachar} className="space-y-4">
+        {/* Barra Superior con Resumen y Tasa del Día */}
         <div
           className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-neutral-800 px-4 py-3 text-white shadow"
-          style={{ background: NEGRO, borderLeft: `4px solid ${NARANJA}` }}
+          style={{ background: NEGRO, borderLeft: `5px solid ${NARANJA}` }}
         >
           <div className="flex items-center gap-3">
             <button
+              type="button"
               onClick={() => setVistaFacturador(false)}
-              className="flex items-center gap-1.5 rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs font-bold text-white hover:border-[#FF5500]"
+              className="flex items-center gap-1.5 rounded border border-neutral-700 bg-neutral-900 px-3 py-1.5 text-xs font-bold text-white transition-colors hover:border-[#FF5500]"
             >
               <ArrowLeft size={14} color={NARANJA} />
-              <span>Volver a la lista de alquileres</span>
+              <span>Volver a la lista</span>
             </button>
             <div>
               <h2 className="text-sm font-bold uppercase tracking-wider">
-                Facturador y Salida de Equipos de Galpón
+                Facturador de Equipos — Nuevo Contrato de Alquiler
               </h2>
               <p className="text-[11px] text-neutral-400">
-                Selecciona los equipos del lado izquierdo y completa los datos del cliente y su abono a la derecha
+                Proceso organizado en 3 pasos: 1. Cliente y Plazo · 2. Equipos · 3. Cobro y Liquidación
               </p>
             </div>
           </div>
 
-          <div className="font-mono text-xs text-neutral-300">
-            Tasa del Día:{' '}
-            <b style={{ color: NARANJA }}>{tasa ? fmtVES(tasa) : '—'}</b>
+          <div className="flex items-center gap-3">
+            <div className="rounded border border-neutral-700 bg-[#1a1a1a] px-3 py-1 font-mono text-xs text-neutral-300">
+              Tasa del Día: <b style={{ color: NARANJA }}>{tasa ? fmtVES(tasa) : '—'}</b>
+            </div>
           </div>
         </div>
 
-        {/* Pantalla Dividida: Izquierda (Catálogo) / Derecha (Hoja de Liquidación) */}
-        <div className="grid gap-4 lg:grid-cols-12">
-          {/* COLUMNA IZQUIERDA: Catálogo de Equipos en Galpón */}
-          <div
-            className="flex flex-col overflow-hidden rounded-md border border-neutral-300 bg-white shadow-sm lg:col-span-7"
-            style={{ borderLeft: `4px solid ${NARANJA}` }}
-          >
-            <div className="border-b border-neutral-200 bg-neutral-900 px-4 py-3 text-white">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold uppercase tracking-wider">
-                  1. Equipos Disponibles en Galpón
-                </span>
-                <div className="flex items-center gap-2 rounded border border-neutral-700 bg-black px-2.5 py-1">
-                  <Search size={13} color={NARANJA} />
+        {errorMsg && (
+          <div className="flex items-center gap-2 rounded-md border border-red-500/60 bg-red-50 p-3 text-xs font-bold text-red-800 shadow-sm">
+            <TriangleAlert size={16} className="shrink-0 text-red-600" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
+        {/* =====================================================================
+            PASO 1: CLIENTE Y PLAZO
+           ===================================================================== */}
+        <div
+          className="overflow-hidden rounded-md border border-neutral-300 bg-white shadow-sm"
+          style={{ borderLeft: `5px solid ${NARANJA}` }}
+        >
+          <div className="flex items-center justify-between border-b border-neutral-200 bg-neutral-900 px-4 py-2.5 text-white">
+            <div className="flex items-center gap-2.5">
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs font-bold text-white shadow"
+                style={{ background: NARANJA }}
+              >
+                1
+              </span>
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-white">
+                  Paso 1: Cliente y Plazo del Alquiler
+                </h3>
+                <p className="text-[10px] text-neutral-400">
+                  Selecciona la empresa o particular que alquila y la duración del contrato
+                </p>
+              </div>
+            </div>
+            <span className="rounded bg-black/50 px-2 py-0.5 font-mono text-[10px] text-neutral-400">
+              Paso 1 de 3
+            </span>
+          </div>
+
+          <div className="space-y-3.5 p-4 text-xs">
+            {/* Selector de Cliente */}
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <label className="font-bold uppercase tracking-wider text-neutral-700">
+                  Cliente / Empresa Contratante *
+                </label>
+                <button
+                  type="button"
+                  onClick={() => setMostrarFormCliente((v) => !v)}
+                  className="flex items-center gap-1 rounded bg-neutral-900 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-black"
+                >
+                  <UserPlus size={12} color={NARANJA} />
+                  <span>{mostrarFormCliente ? 'Cerrar Formulario' : '+ Registrar Cliente Nuevo'}</span>
+                </button>
+              </div>
+
+              <select
+                required
+                value={clienteId}
+                onChange={(e) => setClienteId(e.target.value)}
+                className="w-full rounded border border-neutral-300 bg-white px-3 py-2 text-xs font-bold text-neutral-900 outline-none focus:border-[#FF5500]"
+              >
+                <option value="">— Selecciona un cliente registrado —</option>
+                {clientes.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nombre_razon_social} ({c.rif_cedula})
+                    {num(c.saldo_pendiente_usd) > 0.009 ? ` — [Deuda: $${num(c.saldo_pendiente_usd).toFixed(2)}]` : ''}
+                  </option>
+                ))}
+              </select>
+
+              {/* Semáforo y Alerta Visual de Clientes con Deuda */}
+              {(() => {
+                const cliSel = clientes.find((c) => String(c.id) === String(clienteId))
+                const deuda = num(cliSel?.saldo_pendiente_usd)
+                if (!cliSel || deuda <= 0.009) return null
+                return (
+                  <div className="mt-2.5 flex items-start gap-3 rounded-md border-2 border-red-500 bg-red-50 p-3 text-xs text-red-900 shadow-sm animate-pulse">
+                    <TriangleAlert size={20} className="mt-0.5 shrink-0 text-red-600" />
+                    <div>
+                      <p className="text-xs font-bold text-red-900">
+                        ⚠️ Atención: Este cliente registra un saldo pendiente actual de USD {fmtUSD(deuda)}
+                        {tasa ? ` (${fmtVES(deuda * tasa)} a la Tasa del Día)` : ''}.
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-red-700">
+                        Tiene cobros o contratos atrasados pendientes de liquidación. Verifica las condiciones con Administración antes de despachar o solicita el abono de su deuda previa.
+                      </p>
+                    </div>
+                  </div>
+                )
+              })()}
+
+              {/* Formulario Rápido de Nuevo Cliente */}
+              {mostrarFormCliente && (
+                <div className="mt-3 space-y-2.5 rounded-md border border-neutral-300 bg-neutral-50 p-3.5">
+                  <p className="text-xs font-bold uppercase text-neutral-800">
+                    Anotar Nuevo Cliente Rápido
+                  </p>
+                  <div className="grid gap-2.5 sm:grid-cols-2">
+                    <input
+                      placeholder="RIF o Cédula (Ej. J-40123456-7) *"
+                      value={nuevoCliente.rif_cedula}
+                      onChange={(e) =>
+                        setNuevoCliente({ ...nuevoCliente, rif_cedula: e.target.value })
+                      }
+                      className="rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs font-bold"
+                    />
+                    <input
+                      placeholder="Teléfono de contacto (Ej. 0414-1234567)"
+                      value={nuevoCliente.telefono}
+                      onChange={(e) =>
+                        setNuevoCliente({ ...nuevoCliente, telefono: e.target.value })
+                      }
+                      className="rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs"
+                    />
+                  </div>
                   <input
-                    value={busquedaCatalogo}
-                    onChange={(e) => setBusquedaCatalogo(e.target.value)}
-                    placeholder="Buscar equipo por nombre o código..."
-                    className="w-48 bg-transparent text-xs text-white outline-none"
+                    placeholder="Nombre completo o Razón Social *"
+                    value={nuevoCliente.nombre_razon_social}
+                    onChange={(e) =>
+                      setNuevoCliente({
+                        ...nuevoCliente,
+                        nombre_razon_social: e.target.value,
+                      })
+                    }
+                    className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs font-bold"
                   />
+                  <input
+                    placeholder="Dirección exacta de la obra donde estarán los equipos"
+                    value={nuevoCliente.direccion_obra}
+                    onChange={(e) =>
+                      setNuevoCliente({ ...nuevoCliente, direccion_obra: e.target.value })
+                    }
+                    className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-xs"
+                  />
+                  <div className="flex justify-end pt-1">
+                    <button
+                      type="button"
+                      onClick={guardarClienteRapido}
+                      disabled={guardandoCliente}
+                      className="rounded px-4 py-1.5 text-xs font-bold text-white shadow hover:opacity-95"
+                      style={{ background: NARANJA }}
+                    >
+                      {guardandoCliente ? 'Guardando...' : 'Guardar y Seleccionar Cliente'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Fechas y Días de Alquiler */}
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                  Fecha de Salida (Despacho) *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={fechaInicio}
+                  onChange={(e) => setFechaInicio(e.target.value)}
+                  className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 font-mono text-xs font-bold text-neutral-900 outline-none focus:border-[#FF5500]"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                  Días de Alquiler *
+                </label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Ej. 3"
+                  value={diasAlquiler}
+                  onChange={(e) => setDiasAlquiler(limpiarInputEntero(e.target.value))}
+                  className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 font-mono text-xs font-bold text-neutral-900 placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
+                />
+                {/* Botones de selección rápida de días */}
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {[1, 3, 7, 15, 30].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setDiasAlquiler(String(d))}
+                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-bold transition-colors ${
+                        diasAlquiler === String(d)
+                          ? 'bg-[#FF5500] text-white'
+                          : 'bg-neutral-100 text-neutral-600 hover:bg-neutral-200'
+                      }`}
+                    >
+                      {d}d
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              {/* Filtros rápidos */}
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                  Fecha de Regreso (Vencimiento)
+                </label>
+                <input
+                  type="date"
+                  readOnly
+                  value={fechaVencimientoCalculada}
+                  className="w-full rounded border border-neutral-200 bg-neutral-100 px-2.5 py-1.5 font-mono text-xs font-bold text-neutral-700"
+                />
+                <span className="mt-1 block text-[10px] font-bold text-neutral-500">
+                  Calculado: {diasCalculo} día(s) de obra
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* =====================================================================
+            PASO 2: SELECCIÓN RÁPIDA DE EQUIPOS
+           ===================================================================== */}
+        <div
+          className="overflow-hidden rounded-md border border-neutral-300 bg-white shadow-sm"
+          style={{ borderLeft: `5px solid ${NARANJA}` }}
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 bg-neutral-900 px-4 py-2.5 text-white">
+            <div className="flex items-center gap-2.5">
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs font-bold text-white shadow"
+                style={{ background: NARANJA }}
+              >
+                2
+              </span>
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-white">
+                  Paso 2: Selección Rápida de Equipos de Galpón
+                </h3>
+                <p className="text-[10px] text-neutral-400">
+                  Filtra por rubro, busca y ajusta cantidades con los botones +/- para ver el subtotal diario al instante
+                </p>
+              </div>
+            </div>
+            <span className="rounded bg-black/50 px-2 py-0.5 font-mono text-[10px] text-neutral-400">
+              Paso 2 de 3
+            </span>
+          </div>
+
+          <div className="space-y-3.5 p-4 text-xs">
+            {/* Buscador y Píldoras de Filtro por Categoría */}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-neutral-200 bg-neutral-50 p-2.5">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-500 mr-1">
+                  Categoría:
+                </span>
                 {categoriasCatalogo.map((cat) => (
                   <button
                     key={cat}
                     type="button"
                     onClick={() => setCategoriaFiltro(cat)}
-                    className="rounded px-2.5 py-1 text-[10px] font-bold uppercase transition-colors"
+                    className="rounded-full px-3 py-1 text-[11px] font-bold uppercase transition-colors shadow-sm"
                     style={{
-                      background: categoriaFiltro === cat ? NARANJA : '#262626',
-                      color: categoriaFiltro === cat ? '#fff' : '#bdbdbd',
+                      background: categoriaFiltro === cat ? NARANJA : '#ffffff',
+                      color: categoriaFiltro === cat ? '#ffffff' : '#404040',
+                      border: `1px solid ${categoriaFiltro === cat ? NARANJA : '#d4d4d4'}`,
                     }}
                   >
                     {cat}
                   </button>
                 ))}
               </div>
+
+              <div className="flex items-center gap-2 rounded border border-neutral-300 bg-white px-2.5 py-1 shadow-sm">
+                <Search size={14} color={NARANJA} />
+                <input
+                  value={busquedaCatalogo}
+                  onChange={(e) => setBusquedaCatalogo(e.target.value)}
+                  placeholder="Buscar por equipo o código..."
+                  className="w-48 bg-transparent text-xs font-bold text-neutral-800 outline-none placeholder:text-neutral-400"
+                />
+              </div>
             </div>
 
             {/* Aviso si falta stock propio */}
             {avisoAliado && (
-              <div className="m-3 flex flex-wrap items-center justify-between gap-2 rounded border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-400 bg-amber-50 p-3 text-xs text-amber-900">
                 <div className="flex items-start gap-2">
                   <ShieldAlert size={18} className="shrink-0 text-amber-600" />
                   <div>
@@ -1304,7 +1608,7 @@ export default function AlquileresModule({
                     </p>
                     <p className="text-[11px] text-amber-800">
                       Tenemos en galpón: <b>{avisoAliado.disponiblePropio}</b> · Traídos de aliados:{' '}
-                      <b>{avisoAliado.disponibleExterno}</b>. Puedes ir a &quot;Préstamos con Aliados&quot; para pedirle prestado a una empresa amiga.
+                      <b>{avisoAliado.disponibleExterno}</b>. Puedes pedir prestado a una empresa amiga en el módulo de Préstamos.
                     </p>
                   </div>
                 </div>
@@ -1321,607 +1625,505 @@ export default function AlquileresModule({
               </div>
             )}
 
-            {/* Grilla de equipos */}
-            <div className="grid max-h-[640px] gap-2.5 overflow-y-auto p-3 sm:grid-cols-2">
+            {/* Grilla de Equipos con Botones +/- y Subtotal Diario en Tiempo Real */}
+            <div className="grid max-h-[380px] gap-2.5 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
               {catalogoFiltrado.map((eq) => {
                 const disp = num(eq.stock_propio_disponible)
                 const ext = num(eq.stock_externo_prestado)
                 const precio = num(eq.precio_alquiler_dia_usd)
-                const enCarrito = lineas.find((l) => String(l.inventario_id) === String(eq.id))
+                const lineaSel = lineas.find((l) => String(l.inventario_id) === String(eq.id))
+                const cantEnDespacho = Number(lineaSel?.cantidad || 0)
                 const sinStock = disp <= 0
+                const subtotalDiarioItem = Number((cantEnDespacho * precio).toFixed(2))
 
                 return (
-                  <button
+                  <div
                     key={eq.id}
-                    type="button"
-                    onClick={() => agregarAlDespacho(eq)}
-                    className="flex flex-col justify-between rounded-md border p-3 text-left transition-all hover:border-[#FF5500]"
+                    className="flex flex-col justify-between rounded-md border p-3 text-left transition-all"
                     style={{
-                      borderColor: enCarrito ? NARANJA : '#d4d4d4',
-                      background: enCarrito
-                        ? 'rgba(255,85,0,0.06)'
-                        : sinStock
-                          ? '#fafafa'
-                          : '#ffffff',
-                      borderLeft: `4px solid ${sinStock ? '#dc2626' : NARANJA}`,
+                      borderColor: cantEnDespacho > 0 ? NARANJA : '#e5e7eb',
+                      background: cantEnDespacho > 0 ? 'rgba(255,85,0,0.05)' : '#ffffff',
+                      borderLeft: `4px solid ${cantEnDespacho > 0 ? NARANJA : sinStock ? '#dc2626' : '#d1d5db'}`,
                     }}
-                    title="Toca para agregar 1 unidad a la hoja de despacho"
                   >
                     <div>
                       <div className="flex items-center justify-between gap-1">
                         <span className="font-mono text-[10px] font-bold text-neutral-500">
                           {eq.codigo}
                         </span>
-                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-neutral-600">
+                        <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-neutral-600">
                           {eq.categoria || 'General'}
                         </span>
                       </div>
-                      <p className="mt-1 text-xs font-bold text-neutral-900">{eq.material}</p>
+                      <p className="mt-1 font-bold text-neutral-900 leading-snug">{eq.material}</p>
                     </div>
 
-                    <div className="mt-2.5 flex items-end justify-between border-t border-neutral-200 pt-2">
-                      <div>
-                        <span
-                          className="inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"
-                          style={
-                            disp > 0
-                              ? { background: 'rgba(16,185,129,0.15)', color: '#047857' }
-                              : { background: 'rgba(239,68,68,0.15)', color: '#b91c1c' }
-                          }
-                        >
-                          EN GALPÓN: {fmtNum(disp)}
-                        </span>
-                        {ext > 0 && (
-                          <span className="ml-1 inline-block rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-800">
-                            +{fmtNum(ext)} DE ALIADO
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="text-right font-mono">
-                        <div className="text-xs font-bold text-neutral-900">
-                          {fmtUSD(precio)}/día
-                        </div>
-                        <div className="text-[10px] text-neutral-500">
-                          {tasa ? fmtVES(precio * tasa) : '—'}
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* COLUMNA DERECHA: Hoja de Contrato, Abono Directo y Liquidación */}
-          <form
-            onSubmit={emitirContratoYDespachar}
-            className="flex flex-col justify-between overflow-hidden rounded-md border border-neutral-300 bg-white shadow-sm lg:col-span-5"
-            style={{ borderLeft: `4px solid ${NARANJA}` }}
-          >
-            <div>
-              <div className="border-b border-neutral-200 bg-neutral-900 px-4 py-3 text-white">
-                <h3 className="text-xs font-bold uppercase tracking-wider">
-                  2. Datos del Cliente, Abono y Cobro
-                </h3>
-                <p className="text-[10px] text-neutral-400">
-                  Cálculo automático de días, fletes, abono de hoy y restante por cobrar
-                </p>
-              </div>
-
-              <div className="space-y-3.5 p-4 text-xs">
-                {errorMsg && (
-                  <div className="flex items-center gap-2 rounded border border-red-300 bg-red-50 p-2.5 text-xs text-red-700">
-                    <TriangleAlert size={15} />
-                    <span>{errorMsg}</span>
-                  </div>
-                )}
-
-                {/* Cliente */}
-                <div>
-                  <div className="mb-1 flex items-center justify-between">
-                    <label className="font-bold uppercase text-neutral-700">
-                      Cliente / Empresa *
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => setMostrarFormCliente((v) => !v)}
-                      className="flex items-center gap-1 rounded bg-neutral-900 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-black"
-                    >
-                      <UserPlus size={11} color={NARANJA} />
-                      <span>{mostrarFormCliente ? 'Cerrar' : '+ Cliente Nuevo'}</span>
-                    </button>
-                  </div>
-
-                  <select
-                    required
-                    value={clienteId}
-                    onChange={(e) => setClienteId(e.target.value)}
-                    className="w-full rounded border border-neutral-300 bg-white px-2.5 py-2 outline-none focus:border-[#FF5500]"
-                  >
-                    <option value="">— Elige un cliente registrado —</option>
-                    {clientes.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.nombre_razon_social} ({c.rif_cedula})
-                      </option>
-                    ))}
-                  </select>
-
-                  {/* Semáforo y Alerta de Cliente con Deuda */}
-                  {(() => {
-                    const cliSel = clientes.find((c) => String(c.id) === String(clienteId))
-                    const deuda = num(cliSel?.saldo_pendiente_usd)
-                    if (!cliSel || deuda <= 0.009) return null
-                    return (
-                      <div className="mt-2 flex items-start gap-2.5 rounded-md border-2 border-red-500 bg-red-50 p-3 text-xs text-red-900 shadow-sm">
-                        <TriangleAlert size={18} className="mt-0.5 shrink-0 text-red-600" />
+                    <div className="mt-2.5 border-t border-neutral-200 pt-2 space-y-2">
+                      <div className="flex items-center justify-between">
                         <div>
-                          <p className="font-bold text-red-800">
-                            Atención: Este cliente registra un saldo pendiente actual de USD {fmtUSD(deuda)}
-                            {tasa ? ` (${fmtVES(deuda * tasa)} a la Tasa del Día)` : ''}.
-                          </p>
-                          <p className="mt-0.5 text-[11px] text-red-700">
-                            Tiene cobros atrasados de alquileres previos. Verifica antes de despachar o solicita el abono de su deuda.
-                          </p>
+                          <span
+                            className="inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                            style={
+                              disp > 0
+                                ? { background: 'rgba(16,185,129,0.15)', color: '#047857' }
+                                : { background: 'rgba(239,68,68,0.15)', color: '#b91c1c' }
+                            }
+                          >
+                            DISPONIBLE: {fmtNum(disp)}
+                          </span>
+                          {ext > 0 && (
+                            <span className="ml-1 inline-block rounded bg-sky-100 px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-800">
+                              +{fmtNum(ext)} ALIADO
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="text-right font-mono">
+                          <span className="text-xs font-bold text-neutral-900">
+                            {fmtUSD(precio)}/d
+                          </span>
+                          <span className="block text-[9px] text-neutral-500">
+                            {tasa ? fmtVES(precio * tasa) : ''}
+                          </span>
                         </div>
                       </div>
-                    )
-                  })()}
 
-                  {/* Formulario rápido para cliente nuevo */}
-                  {mostrarFormCliente && (
-                    <div className="mt-2 space-y-2 rounded border border-neutral-300 bg-neutral-50 p-3">
-                      <p className="text-[11px] font-bold uppercase text-neutral-700">
-                        Anotar Nuevo Cliente
-                      </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        <input
-                          placeholder="RIF o Cédula *"
-                          value={nuevoCliente.rif_cedula}
-                          onChange={(e) =>
-                            setNuevoCliente({ ...nuevoCliente, rif_cedula: e.target.value })
-                          }
-                          className="rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs"
-                        />
-                        <input
-                          placeholder="Teléfono de contacto"
-                          value={nuevoCliente.telefono}
-                          onChange={(e) =>
-                            setNuevoCliente({ ...nuevoCliente, telefono: e.target.value })
-                          }
-                          className="rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs"
-                        />
-                      </div>
-                      <input
-                        placeholder="Nombre completo o Razón Social *"
-                        value={nuevoCliente.nombre_razon_social}
-                        onChange={(e) =>
-                          setNuevoCliente({
-                            ...nuevoCliente,
-                            nombre_razon_social: e.target.value,
-                          })
-                        }
-                        className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs"
-                      />
-                      <input
-                        placeholder="Dirección de la obra donde van los equipos"
-                        value={nuevoCliente.direccion_obra}
-                        onChange={(e) =>
-                          setNuevoCliente({ ...nuevoCliente, direccion_obra: e.target.value })
-                        }
-                        className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs"
-                      />
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={guardarClienteRapido}
-                          disabled={guardandoCliente}
-                          className="rounded px-3 py-1 text-xs font-bold text-white"
-                          style={{ background: NARANJA }}
-                        >
-                          {guardandoCliente ? 'Guardando...' : 'Guardar y Seleccionar'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Fechas y Días (Campo numérico limpio) */}
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
-                      Fecha Salida
-                    </label>
-                    <input
-                      type="date"
-                      value={fechaInicio}
-                      onChange={(e) => setFechaInicio(e.target.value)}
-                      className="w-full rounded border border-neutral-300 px-2 py-1.5 font-mono text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
-                      Días Alquiler
-                    </label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      placeholder="Ej. 3"
-                      value={diasAlquiler}
-                      onChange={(e) => setDiasAlquiler(limpiarInputEntero(e.target.value))}
-                      className="w-full rounded border border-neutral-300 px-2 py-1.5 font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
-                      Fecha Regreso
-                    </label>
-                    <input
-                      type="date"
-                      readOnly
-                      value={fechaVencimientoCalculada}
-                      className="w-full rounded border border-neutral-200 bg-neutral-100 px-2 py-1.5 font-mono text-xs text-neutral-700"
-                    />
-                  </div>
-                </div>
-
-                {/* Equipos seleccionados */}
-                <div className="rounded border border-neutral-300 bg-neutral-50 p-2.5">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-neutral-600">
-                      Equipos en el despacho ({lineas.length})
-                    </span>
-                    <span className="font-mono text-[10px] text-neutral-500">
-                      Por: {diasCalculo} día(s)
-                    </span>
-                  </div>
-
-                  {lineas.length === 0 ? (
-                    <p className="py-4 text-center text-xs text-neutral-400">
-                      Toca los equipos en el catálogo izquierdo para cargarlos a esta lista.
-                    </p>
-                  ) : (
-                    <div className="max-h-44 divide-y divide-neutral-200 overflow-y-auto bg-white">
-                      {lineas.map((l) => {
-                        const sub =
-                          Number(l.cantidad || 0) *
-                          num(l.precio_alquiler_dia_usd) *
-                          diasCalculo
-                        return (
-                          <div
-                            key={l.inventario_id}
-                            className="flex items-center justify-between gap-2 px-2.5 py-2"
-                          >
-                            <div className="min-w-0">
-                              <p className="truncate font-bold text-neutral-900">{l.material}</p>
-                              <p className="font-mono text-[10px] text-neutral-500">
-                                {l.codigo} · {fmtUSD(l.precio_alquiler_dia_usd)}/día
-                              </p>
-                            </div>
-
-                            <div className="flex items-center gap-2">
+                      {/* Controles de Cantidad +/- */}
+                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-neutral-100">
+                        {cantEnDespacho > 0 ? (
+                          <>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => decrementarEquipo(eq.id)}
+                                className="flex h-7 w-7 items-center justify-center rounded border border-neutral-300 bg-white text-neutral-700 hover:bg-neutral-100 hover:border-neutral-400 font-bold"
+                                title="Restar 1 unidad"
+                              >
+                                <Minus size={13} />
+                              </button>
                               <input
                                 type="text"
                                 inputMode="numeric"
-                                placeholder="1"
-                                value={l.cantidad}
-                                onChange={(e) =>
-                                  cambiarCantidadLinea(l.inventario_id, e.target.value)
-                                }
-                                className="w-14 rounded border border-neutral-300 px-1.5 py-1 text-center font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
-                                title="Cantidad de piezas a entregar"
+                                value={lineaSel.cantidad}
+                                onChange={(e) => cambiarCantidadLinea(eq.id, e.target.value)}
+                                className="h-7 w-12 rounded border border-neutral-300 bg-white text-center font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
                               />
-                              <span className="w-20 text-right font-mono text-xs font-bold">
-                                {fmtUSD(sub)}
-                              </span>
                               <button
                                 type="button"
-                                onClick={() => quitarLinea(l.inventario_id)}
-                                className="text-red-600 hover:text-red-800"
-                                title="Quitar de este despacho"
+                                onClick={() => incrementarEquipo(eq)}
+                                className="flex h-7 w-7 items-center justify-center rounded text-white shadow font-bold"
+                                style={{ background: NARANJA }}
+                                title="Sumar 1 unidad"
                               >
-                                <Trash2 size={14} />
+                                <Plus size={13} />
                               </button>
                             </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
 
-                {/* Flete y Garantía (Inician en blanco '' con placeholder) */}
-                <div className="grid gap-2.5 sm:grid-cols-2">
-                  <div className="rounded border border-neutral-300 p-2.5">
-                    <label className="flex cursor-pointer items-center gap-2 font-bold text-neutral-800">
-                      <input
-                        type="checkbox"
-                        checked={requiereFlete}
-                        onChange={(e) => setRequiereFlete(e.target.checked)}
-                        className="h-4 w-4 accent-[#FF5500]"
-                      />
-                      <Truck size={14} color={NARANJA} />
-                      <span>Incluir Transporte / Flete</span>
-                    </label>
-                    {requiereFlete && (
-                      <div className="mt-2 flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-neutral-600">Costo USD:</span>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          placeholder="Ej. 15.00"
-                          value={costoFleteUsd}
-                          onChange={(e) =>
-                            setCostoFleteUsd(limpiarInputDecimal(e.target.value))
-                          }
-                          className="w-24 rounded border border-neutral-300 px-2 py-1 text-right font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
-                        />
+                            <div className="text-right font-mono">
+                              <span className="text-[10px] text-neutral-500">Subtotal/día:</span>
+                              <span className="block font-bold text-emerald-800">
+                                {fmtUSD(subtotalDiarioItem)}
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => agregarAlDespacho(eq)}
+                            disabled={sinStock && ext <= 0}
+                            className="flex w-full items-center justify-center gap-1.5 rounded py-1.5 text-xs font-bold text-white transition-opacity hover:opacity-95 disabled:opacity-40"
+                            style={{ background: NEGRO }}
+                          >
+                            <Plus size={13} color={NARANJA} />
+                            <span>+ Agregar al Despacho</span>
+                          </button>
+                        )}
                       </div>
-                    )}
+                    </div>
                   </div>
+                )
+              })}
+            </div>
 
-                  <div className="rounded border border-neutral-300 p-2.5">
-                    <label className="block text-[10px] font-bold uppercase text-neutral-600">
-                      Depósito en Garantía (USD)
-                    </label>
+            {/* Resumen / Bandeja de Equipos Seleccionados en este Despacho */}
+            <div className="rounded-md border border-neutral-300 bg-neutral-50 p-3">
+              <div className="mb-2 flex items-center justify-between border-b border-neutral-200 pb-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-neutral-800">
+                  Resumen de Equipos en este Despacho ({lineas.length} ítems ·{' '}
+                  {lineas.reduce((acc, l) => acc + Number(l.cantidad || 0), 0)} piezas totales)
+                </span>
+                <span className="font-mono text-xs font-bold text-neutral-600">
+                  Multiplicador: {diasCalculo} día(s)
+                </span>
+              </div>
+
+              {lineas.length === 0 ? (
+                <p className="py-4 text-center text-xs text-neutral-400">
+                  No hay equipos seleccionados aún. Usa los botones &quot;+ Agregar al Despacho&quot; o los controles +/- de arriba.
+                </p>
+              ) : (
+                <div className="max-h-48 divide-y divide-neutral-200 overflow-y-auto rounded border border-neutral-200 bg-white">
+                  {lineas.map((l) => {
+                    const cant = Number(l.cantidad || 0)
+                    const precioDia = num(l.precio_alquiler_dia_usd)
+                    const subtotalLinea = cant * precioDia * diasCalculo
+
+                    return (
+                      <div
+                        key={l.inventario_id}
+                        className="flex items-center justify-between gap-3 px-3 py-2 text-xs"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-bold text-neutral-900">{l.material}</p>
+                          <p className="font-mono text-[10px] text-neutral-500">
+                            {l.codigo} · {fmtUSD(precioDia)}/día × {cant} pza(s) × {diasCalculo}d
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => decrementarEquipo(l.inventario_id)}
+                              className="rounded border border-neutral-300 p-1 text-neutral-600 hover:bg-neutral-100"
+                            >
+                              <Minus size={11} />
+                            </button>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={l.cantidad}
+                              onChange={(e) => cambiarCantidadLinea(l.inventario_id, e.target.value)}
+                              className="h-6 w-11 rounded border border-neutral-300 text-center font-mono text-xs font-bold"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const eq = inventario.find((i) => String(i.id) === String(l.inventario_id))
+                                if (eq) incrementarEquipo(eq)
+                              }}
+                              className="rounded border border-neutral-300 p-1 text-neutral-600 hover:bg-neutral-100"
+                            >
+                              <Plus size={11} />
+                            </button>
+                          </div>
+
+                          <span className="w-20 text-right font-mono text-xs font-bold text-neutral-900">
+                            {fmtUSD(subtotalLinea)}
+                          </span>
+
+                          <button
+                            type="button"
+                            onClick={() => quitarLinea(l.inventario_id)}
+                            className="rounded p-1 text-neutral-400 hover:bg-red-50 hover:text-red-600"
+                            title="Quitar este equipo del despacho"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* =====================================================================
+            PASO 3: LIQUIDACIÓN, COBRO Y FORMAS DE PAGO
+           ===================================================================== */}
+        <div
+          className="overflow-hidden rounded-md border border-neutral-300 bg-white shadow-sm"
+          style={{ borderLeft: `5px solid ${NARANJA}` }}
+        >
+          <div className="flex items-center justify-between border-b border-neutral-200 bg-neutral-900 px-4 py-2.5 text-white">
+            <div className="flex items-center gap-2.5">
+              <span
+                className="flex h-6 w-6 items-center justify-center rounded-full font-mono text-xs font-bold text-white shadow"
+                style={{ background: NARANJA }}
+              >
+                3
+              </span>
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-white">
+                  Paso 3: Liquidación, Formas de Pago y Cobro
+                </h3>
+                <p className="text-[10px] text-neutral-400">
+                  Configura flete, depósito, registra el abono o pago completo a la Tasa del Día
+                </p>
+              </div>
+            </div>
+            <span className="rounded bg-black/50 px-2 py-0.5 font-mono text-[10px] text-neutral-400">
+              Paso 3 de 3
+            </span>
+          </div>
+
+          <div className="space-y-4 p-4 text-xs">
+            {/* Opciones Adicionales: Flete y Depósito en Garantía */}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border border-neutral-300 p-3 bg-neutral-50">
+                <label className="flex cursor-pointer items-center gap-2 font-bold text-neutral-800">
+                  <input
+                    type="checkbox"
+                    checked={requiereFlete}
+                    onChange={(e) => setRequiereFlete(e.target.checked)}
+                    className="h-4 w-4 accent-[#FF5500]"
+                  />
+                  <Truck size={15} color={NARANJA} />
+                  <span>Incluir Transporte / Flete</span>
+                </label>
+                {requiereFlete && (
+                  <div className="mt-2 flex items-center justify-between gap-2 border-t border-neutral-200 pt-2">
+                    <span className="text-[11px] font-bold text-neutral-600">Costo del Flete (USD):</span>
                     <input
                       type="text"
                       inputMode="decimal"
-                      value={depositoGarantiaUsd}
-                      onChange={(e) =>
-                        setDepositoGarantiaUsd(limpiarInputDecimal(e.target.value))
-                      }
-                      placeholder="0.00"
-                      className="mt-1 w-full rounded border border-neutral-300 px-2 py-1 text-right font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
+                      placeholder="Ej. 15.00"
+                      value={costoFleteUsd}
+                      onChange={(e) => setCostoFleteUsd(limpiarInputDecimal(e.target.value))}
+                      className="w-28 rounded border border-neutral-300 bg-white px-2.5 py-1 text-right font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
                     />
                   </div>
-                </div>
+                )}
+              </div>
 
-                {/* FORMAS / MÉTODOS DE PAGO DEL CLIENTE (SUMA AUTOMÁTICA EN TIEMPO REAL) */}
-                <div className="rounded-md border border-neutral-300 bg-white p-3 shadow-sm">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 pb-2">
-                    <div>
-                      <h4 className="text-xs font-bold uppercase tracking-wider text-neutral-800">
-                        Formas / Métodos de Pago del Cliente
-                      </h4>
-                      <p className="text-[10px] text-neutral-500">
-                        Puedes añadir uno o múltiples métodos de pago. La sumatoria se calcula automáticamente en tiempo real.
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      {totalContratoUSD > 0 && (
-                        <button
-                          type="button"
-                          onClick={pagarTotalidadFacturador}
-                          className="flex items-center gap-1 rounded border border-emerald-400 bg-emerald-50 px-2 py-1 text-[10px] font-bold text-emerald-800 hover:bg-emerald-100"
-                          title="Cubrir el 100% del pago de este contrato"
-                        >
-                          <Check size={12} />
-                          <span>Pagar Todo ({fmtUSD(totalContratoUSD)})</span>
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={limpiarPagosFacturador}
-                        className="rounded border border-neutral-300 bg-neutral-100 px-2 py-1 text-[10px] font-bold text-neutral-600 hover:bg-neutral-200"
-                        title="Reiniciar métodos de pago"
-                      >
-                        Limpiar
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Lista de filas de pago dinámicas */}
-                  <div className="space-y-2">
-                    {pagosFacturador.map((p, idx) => {
-                      const montoNum = Number(p.monto || 0)
-                      return (
-                        <div
-                          key={p.id}
-                          className="flex flex-wrap items-center gap-2 rounded border border-neutral-200 bg-neutral-50/80 p-2.5 text-xs"
-                        >
-                          <div className="min-w-[160px] flex-1 sm:max-w-[240px]">
-                            <label className="mb-0.5 block text-[9px] font-bold uppercase text-neutral-500">
-                              Método de Pago #{idx + 1}
-                            </label>
-                            <select
-                              value={p.metodo}
-                              onChange={(e) => actualizarMetodoPagoFacturador(p.id, e.target.value)}
-                              className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-bold text-neutral-800 outline-none focus:border-[#FF5500]"
-                            >
-                              {metodosPago.map((m) => (
-                                <option key={m} value={m}>
-                                  {m}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <div className="w-28 flex-1 sm:w-36">
-                            <label className="mb-0.5 block text-[9px] font-bold uppercase text-neutral-500">
-                              Monto (USD)
-                            </label>
-                            <div className="relative">
-                              <span className="absolute left-2 top-1.5 font-bold text-neutral-400">$</span>
-                              <input
-                                type="text"
-                                inputMode="decimal"
-                                value={p.monto}
-                                onChange={(e) => actualizarMontoPagoFacturador(p.id, e.target.value)}
-                                placeholder="0.00"
-                                className="w-full rounded border border-neutral-300 bg-white py-1.5 pl-6 pr-2 text-right font-mono text-xs font-bold text-neutral-900 outline-none focus:border-[#FF5500]"
-                              />
-                            </div>
-                          </div>
-
-                          {/* Equivalente en Bs a la Tasa del Día */}
-                          <div className="min-w-[130px] flex-1 text-right">
-                            <span className="block text-[9px] font-bold uppercase text-neutral-500">
-                              Equivalente en Bs.
-                            </span>
-                            <span className="font-mono text-[11px] font-bold text-neutral-700">
-                              {tasa && montoNum > 0 ? fmtVES(montoNum * tasa) : 'Bs. 0,00'}
-                            </span>
-                          </div>
-
-                          {/* Botón rápido Cubrir Resto y Eliminar */}
-                          <div className="flex items-center gap-1 pt-3 sm:pt-2">
-                            {totalContratoUSD > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => cubrirRestanteFacturador(p.id)}
-                                className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800 hover:bg-amber-100"
-                                title="Rellenar este método con el saldo pendiente para completar el total"
-                              >
-                                Cubrir Resto
-                              </button>
-                            )}
-                            {pagosFacturador.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => eliminarFilaPagoFacturador(p.id)}
-                                className="rounded p-1 text-neutral-400 hover:bg-red-50 hover:text-red-600"
-                                title="Eliminar este método de pago"
-                              >
-                                <Trash2 size={15} />
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
-
-                  {/* Botón para añadir método de pago adicional */}
-                  <div className="mt-2.5 flex items-center justify-between pt-1">
-                    <button
-                      type="button"
-                      onClick={agregarFilaPagoFacturador}
-                      className="flex items-center gap-1.5 rounded border border-neutral-300 bg-white px-2.5 py-1 text-xs font-bold text-neutral-700 hover:border-[#FF5500] hover:text-[#FF5500]"
-                    >
-                      <Plus size={14} color={NARANJA} />
-                      <span>+ Agregar otro método de pago</span>
-                    </button>
-                    <span className="text-[10px] font-bold text-neutral-500">
-                      {pagosFacturador.length} método(s) ingresado(s)
-                    </span>
-                  </div>
-
-                  {/* Resumen en vivo: Abonado Hoy y Restante por Cobrar */}
-                  <div className="mt-3 rounded border border-neutral-200 bg-neutral-50 p-2.5 font-mono text-xs">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <span className="block text-[10px] font-bold uppercase text-neutral-500">
-                          Total Abonado Hoy (Suma Automática):
-                        </span>
-                        <span className="text-sm font-bold text-emerald-700">
-                          {fmtUSD(abonoHoyNum)}
-                        </span>
-                        {tasa && abonoHoyNum > 0 && (
-                          <span className="ml-1 text-[11px] text-neutral-500">
-                            ({fmtVES(abonoHoyNum * tasa)} a la Tasa del Día)
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="text-right">
-                        <span className="block text-[10px] font-bold uppercase text-neutral-500">
-                          Restante por Cobrar (Deuda):
-                        </span>
-                        <span
-                          className={`text-sm font-bold ${
-                            restantePorCobrarHoyUSD > 0 ? 'text-red-600' : 'text-neutral-700'
-                          }`}
-                        >
-                          {fmtUSD(restantePorCobrarHoyUSD)}
-                        </span>
-                        {tasa && (
-                          <span className="ml-1 text-[11px] text-neutral-500">
-                            ({fmtVES(restantePorCobrarHoyUSD * tasa)})
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Alerta de exceso si supera el contrato */}
-                    {abonoHoyNum > totalContratoUSD + 0.01 && (
-                      <div className="mt-2 flex items-center gap-1.5 rounded border border-red-200 bg-red-50 p-1.5 text-[11px] font-bold text-red-700 font-sans">
-                        <TriangleAlert size={14} className="text-red-600 shrink-0" />
-                        <span>
-                          Atención: La suma ingresada ({fmtUSD(abonoHoyNum)}) supera el total del contrato ({fmtUSD(totalContratoUSD)}).
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                </div>
+              <div className="rounded-md border border-neutral-300 p-3 bg-neutral-50">
+                <label className="block text-[11px] font-bold uppercase text-neutral-700">
+                  Depósito en Garantía (USD) <span className="text-[10px] font-normal text-neutral-400">(Opcional)</span>
+                </label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={depositoGarantiaUsd}
+                  onChange={(e) => setDepositoGarantiaUsd(limpiarInputDecimal(e.target.value))}
+                  placeholder="0.00"
+                  className="mt-1.5 w-full rounded border border-neutral-300 bg-white px-2.5 py-1 text-right font-mono text-xs font-bold placeholder:text-neutral-400 outline-none focus:border-[#FF5500]"
+                />
               </div>
             </div>
 
-            {/* Total final */}
-            <div
-              className="border-t border-neutral-800 p-4 text-white"
-              style={{ background: NEGRO }}
-            >
-              <div className="space-y-1 font-mono text-xs">
+            {/* Resumen Claro de Liquidación en USD y Bs. a la Tasa del Día */}
+            <div className="rounded-md border border-neutral-800 bg-[#161616] p-4 text-white shadow-md">
+              <div className="space-y-1.5 font-mono text-xs">
                 <div className="flex justify-between text-neutral-400">
-                  <span>Alquiler de equipos ({diasCalculo} días):</span>
+                  <span>Alquiler de equipos ({diasCalculo} días de obra):</span>
                   <span>{fmtUSD(subtotalEquiposUSD)}</span>
                 </div>
-                <div className="flex justify-between text-neutral-400">
-                  <span>Transporte / Flete:</span>
-                  <span>{fmtUSD(fleteUSD)}</span>
-                </div>
+                {fleteUSD > 0 && (
+                  <div className="flex justify-between text-neutral-400">
+                    <span>Transporte / Flete:</span>
+                    <span>{fmtUSD(fleteUSD)}</span>
+                  </div>
+                )}
                 {garantiaUSD > 0 && (
                   <div className="flex justify-between text-neutral-400">
-                    <span>Garantía Reembolsable:</span>
+                    <span>Depósito en Garantía:</span>
                     <span>{fmtUSD(garantiaUSD)}</span>
                   </div>
                 )}
 
                 <div className="my-2 border-t border-neutral-700 pt-2">
                   <div className="flex items-baseline justify-between">
-                    <span className="text-xs font-bold uppercase text-white">
+                    <span className="text-xs font-bold uppercase tracking-wider text-white">
                       TOTAL CONTRATO EN DÓLARES:
                     </span>
-                    <span className="text-lg font-bold" style={{ color: NARANJA }}>
+                    <span className="text-xl font-bold" style={{ color: NARANJA }}>
                       {fmtUSD(totalContratoUSD)}
                     </span>
                   </div>
-                  <div className="flex items-baseline justify-between text-[11px] text-neutral-300">
+                  <div className="flex items-baseline justify-between text-xs text-neutral-300">
                     <span>TOTAL EN BOLÍVARES (TASA DEL DÍA):</span>
-                    <span className="font-bold">
+                    <span className="font-bold text-white">
                       {tasa ? fmtVES(totalContratoUSD * tasa) : '—'}
                     </span>
                   </div>
-                  {garantiaUSD > 0 && (
-                    <div className="mt-1.5 flex justify-between rounded bg-neutral-900 px-2 py-1 text-[11px] text-amber-300">
-                      <span>Total con Garantía:</span>
-                      <span className="font-bold">
-                        {fmtUSD(totalConGarantiaUSD)} (
-                        {tasa ? fmtVES(totalConGarantiaUSD * tasa) : '—'})
-                      </span>
-                    </div>
-                  )}
                 </div>
               </div>
-
-              <button
-                type="submit"
-                disabled={procesando}
-                className="mt-3 flex w-full items-center justify-center gap-2 rounded py-2.5 text-xs font-bold uppercase tracking-wider text-white shadow transition-opacity hover:opacity-95 disabled:opacity-50"
-                style={{ background: NARANJA }}
-              >
-                {procesando ? (
-                  <Loader2 size={16} className="animate-spin" />
-                ) : (
-                  <CheckCircle2 size={16} />
-                )}
-                <span>Aprobar Despacho, Descontar de Galpón y Guardar</span>
-              </button>
             </div>
-          </form>
-        </div>
-      </div>
+
+            {/* Bloque Unificado de Métodos de Pago: 1 o Múltiples Métodos con Suma Automática */}
+            <div className="rounded-md border border-neutral-300 bg-neutral-50 p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-neutral-200 pb-2">
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-neutral-800">
+                    Formas de Pago y Abono del Cliente
+                  </h4>
+                  <p className="text-[11px] text-neutral-500">
+                    Ingresa uno o varios métodos de pago. La suma y el saldo pendiente se calculan automáticamente.
+                  </p>
+                </div>
+
+                {totalContratoUSD > 0 && (
+                  <button
+                    type="button"
+                    onClick={pagarTotalidadFacturador}
+                    className="flex items-center gap-1 rounded border border-emerald-400 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100"
+                    title="Cubrir el 100% del pago de este contrato"
+                  >
+                    <Check size={13} />
+                    <span>Pagar Todo ({fmtUSD(totalContratoUSD)})</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Lista dinámica de métodos de pago */}
+              <div className="space-y-2">
+                {pagosFacturador.map((p, idx) => {
+                  const montoNum = Number(p.monto || 0)
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex flex-wrap items-center gap-2 rounded border border-neutral-200 bg-white p-2.5 text-xs shadow-sm"
+                    >
+                      <div className="min-w-[150px] flex-1 sm:max-w-[240px]">
+                        <label className="mb-0.5 block text-[9px] font-bold uppercase text-neutral-500">
+                          Método #{idx + 1}
+                        </label>
+                        <select
+                          value={p.metodo}
+                          onChange={(e) => actualizarMetodoPagoFacturador(p.id, e.target.value)}
+                          className="w-full rounded border border-neutral-300 bg-white px-2 py-1.5 text-xs font-bold text-neutral-800 outline-none focus:border-[#FF5500]"
+                        >
+                          {metodosPago.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="w-28 flex-1 sm:w-36">
+                        <label className="mb-0.5 block text-[9px] font-bold uppercase text-neutral-500">
+                          Monto (USD)
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-2 top-1.5 font-bold text-neutral-400">$</span>
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={p.monto}
+                            onChange={(e) => actualizarMontoPagoFacturador(p.id, e.target.value)}
+                            placeholder="0.00"
+                            className="w-full rounded border border-neutral-300 bg-white py-1.5 pl-6 pr-2 text-right font-mono text-xs font-bold text-neutral-900 outline-none focus:border-[#FF5500]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="min-w-[130px] flex-1 text-right">
+                        <span className="block text-[9px] font-bold uppercase text-neutral-500">
+                          Equivalente en Bs.
+                        </span>
+                        <span className="font-mono text-[11px] font-bold text-neutral-700">
+                          {tasa && montoNum > 0 ? fmtVES(montoNum * tasa) : 'Bs. 0,00'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1 pt-3 sm:pt-2">
+                        {totalContratoUSD > 0 && restantePorCobrarHoyUSD > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => cubrirRestanteFacturador(p.id)}
+                            className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800 hover:bg-amber-100"
+                            title="Rellenar este método con el saldo pendiente para completar el total"
+                          >
+                            Cubrir Resto
+                          </button>
+                        )}
+                        {pagosFacturador.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => eliminarFilaPagoFacturador(p.id)}
+                            className="rounded p-1 text-neutral-400 hover:bg-red-50 hover:text-red-600"
+                            title="Eliminar este método de pago"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    type="button"
+                    onClick={agregarFilaPagoFacturador}
+                    className="flex items-center gap-1.5 rounded border border-neutral-300 bg-white px-2.5 py-1 text-xs font-bold text-neutral-700 hover:border-[#FF5500] hover:text-[#FF5500]"
+                  >
+                    <Plus size={14} color={NARANJA} />
+                    <span>+ Agregar otro método de pago</span>
+                  </button>
+                  <span className="text-[11px] text-neutral-500 font-bold">
+                    {pagosFacturador.length} {pagosFacturador.length === 1 ? 'método configurado' : 'métodos configurados'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+              {/* Resumen en Vivo de Abono y Restante por Cobrar */}
+              <div className="rounded border border-neutral-200 bg-white p-3 font-mono text-xs shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <span className="block text-[10px] font-bold uppercase text-neutral-500">
+                      Total Abonado Hoy (Suma Automática):
+                    </span>
+                    <span className="text-base font-bold text-emerald-700">
+                      {fmtUSD(abonoHoyNum)}
+                    </span>
+                    {tasa && abonoHoyNum > 0 && (
+                      <span className="ml-1 text-[11px] text-neutral-500">
+                        ({fmtVES(abonoHoyNum * tasa)} a la Tasa del Día)
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="text-right">
+                    <span className="block text-[10px] font-bold uppercase text-neutral-500">
+                      Restante por Cobrar (Deuda):
+                    </span>
+                    <span
+                      className={`text-base font-bold ${
+                        restantePorCobrarHoyUSD > 0.009 ? 'text-red-600' : 'text-emerald-700'
+                      }`}
+                    >
+                      {fmtUSD(restantePorCobrarHoyUSD)}
+                    </span>
+                    {tasa && (
+                      <span className="ml-1 text-[11px] text-neutral-500">
+                        ({fmtVES(restantePorCobrarHoyUSD * tasa)})
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {abonoHoyNum > totalContratoUSD + 0.01 && (
+                  <div className="mt-2 flex items-center gap-1.5 rounded border border-red-200 bg-red-50 p-2 text-xs font-bold text-red-700 font-sans">
+                    <TriangleAlert size={15} className="text-red-600 shrink-0" />
+                    <span>
+                      Atención: La suma ingresada ({fmtUSD(abonoHoyNum)}) supera el total del contrato ({fmtUSD(totalContratoUSD)}).
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Botón Principal de Aprobación */}
+            <button
+              type="submit"
+              disabled={procesando}
+              className="flex w-full items-center justify-center gap-2 rounded py-3 text-xs font-bold uppercase tracking-wider text-white shadow-lg transition-opacity hover:opacity-95 disabled:opacity-50"
+              style={{ background: NARANJA }}
+            >
+              {procesando ? (
+                <Loader2 size={16} className="animate-spin" />
+              ) : (
+                <CheckCircle2 size={16} />
+              )}
+              <span>Aprobar Despacho, Descontar de Galpón y Guardar</span>
+            </button>
+          </div>
+      </form>
     )
   }
 
@@ -2166,7 +2368,8 @@ export default function AlquileresModule({
                           {permisos.puedeVerMontosVentas && datosPago.restante > 0 && (
                             <button
                               onClick={() => {
-                                setPagosAbono([{ id: 'pa-1', metodo: metodosPago[0] || 'Efectivo USD', monto: '' }])
+                                const deudaTexto = datosPago.restante > 0 ? String(datosPago.restante) : ''
+                                setPagosAbono([{ id: 'pa-1', metodo: metodosPago[0] || 'Efectivo USD', monto: deudaTexto }])
                                 setErrorMsg(null)
                                 setModalAbono(c)
                               }}
@@ -2530,14 +2733,18 @@ export default function AlquileresModule({
                   />
                 </div>
 
-                {/* Cálculo automático del monto extra y nueva fecha */}
+                {/* Cálculo automático del monto extra y nueva fecha (solo sobre piezas activas en obra) */}
                 <div className="space-y-1 rounded border border-neutral-200 bg-neutral-100 p-3 font-mono text-xs text-neutral-800">
+                  <div className="flex justify-between text-[11px] text-neutral-600">
+                    <span>Piezas que siguen activas en obra:</span>
+                    <b>{calculosProrroga.piezasActivasEnObra} und. ({fmtUSD(calculosProrroga.tarifaDiaria)}/día)</b>
+                  </div>
                   <div className="flex justify-between">
                     <span>Nueva fecha de vencimiento:</span>
                     <b>{fmtFecha(calculosProrroga.nuevaFecha)}</b>
                   </div>
                   <div className="flex justify-between">
-                    <span>Monto Extra en USD ({calculosProrroga.extraDias} d):</span>
+                    <span>Monto Extra en USD ({calculosProrroga.extraDias} d × {fmtUSD(calculosProrroga.tarifaDiaria)}):</span>
                     <b style={{ color: NARANJA }}>{fmtUSD(calculosProrroga.montoExtraUSD)}</b>
                   </div>
                   <div className="flex justify-between text-[11px] text-neutral-600">
@@ -2619,11 +2826,11 @@ export default function AlquileresModule({
         )}
 
         {/* =================================================================
-            MODAL 3: DEVOLUCIÓN PARCIAL DE EQUIPOS DE OBRA
+            MODAL 3: DEVOLUCIÓN (PARCIAL O TOTAL) Y REGISTRO DE EXTRAVÍOS
            ================================================================= */}
         {modalDevolucionParcial && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-            <div className="w-full max-w-lg overflow-hidden rounded-md border border-neutral-700 bg-white shadow-2xl">
+            <div className="w-full max-w-2xl overflow-hidden rounded-md border border-neutral-700 bg-white shadow-2xl">
               <div
                 className="flex items-center justify-between px-5 py-3.5 text-white"
                 style={{ background: NEGRO, borderBottom: `3px solid ${NARANJA}` }}
@@ -2631,7 +2838,7 @@ export default function AlquileresModule({
                 <div className="flex items-center gap-2">
                   <PackageCheck size={18} color={NARANJA} />
                   <h3 className="text-sm font-bold uppercase tracking-wider">
-                    Recepción de Devolución Parcial
+                    Recepción de Devolución (Parcial o Total) y Extravíos
                   </h3>
                 </div>
                 <button
@@ -2674,7 +2881,7 @@ export default function AlquileresModule({
 
                 <div>
                   <label className="mb-1 block font-bold uppercase text-neutral-700">
-                    Fecha de Ingreso Parcial a Galpón *
+                    Fecha de Ingreso a Galpón *
                   </label>
                   <input
                     type="date"
@@ -2698,66 +2905,138 @@ export default function AlquileresModule({
 
                 <div>
                   <label className="mb-1.5 block font-bold uppercase text-neutral-700">
-                    Indica cuántas unidades regresa el cliente hoy:
+                    Indica unidades devueltas a galpón y piezas faltantes / extraviadas / dañadas:
                   </label>
-                  <div className="max-h-56 divide-y divide-neutral-200 overflow-y-auto rounded border border-neutral-300 bg-white">
+                  <div className="max-h-72 divide-y divide-neutral-200 overflow-y-auto rounded border border-neutral-300 bg-white">
                     {obtenerItemsConRespaldo(modalDevolucionParcial).map((it, idx) => {
                       const idKey = it.inventario_id
                         ? String(it.inventario_id)
                         : `${it.codigo || 'eq'}_${idx}`
-                      const cantActiva = Number(it.cantidad || 0)
+                      const cantActiva = Math.max(
+                        0,
+                        num(it.cantidad) - num(it.cantidad_devuelta || 0),
+                      )
                       const yaDevuelto = Boolean(it.devuelto)
                       const precioDia = num(
                         it.precio_alquiler_dia_usd ?? it.precio_dia_usd ?? it.precio_unitario_usd,
                       )
+                      const cantFaltanteNum = Number(devolucionFaltantes[idKey] || 0)
+                      const precioRepNum = Number(devolucionPreciosRep[idKey] || 0)
+                      const cargoExtravio = Number((cantFaltanteNum * precioRepNum).toFixed(2))
 
                       return (
-                        <div key={idKey} className="flex items-center justify-between gap-3 p-3">
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-neutral-900">{it.material}</p>
-                            <p className="font-mono text-[11px] text-neutral-500">
-                              {it.codigo} · {fmtUSD(precioDia)}/día · En obra:{' '}
-                              <b>{cantActiva} und.</b>
-                              {yaDevuelto && (
-                                <span className="ml-2 font-bold text-emerald-700">
-                                  [Lote ya devuelto]
-                                </span>
-                              )}
-                            </p>
-                          </div>
+                        <div key={idKey} className="space-y-2.5 p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0 flex-1">
+                              <p className="font-bold text-neutral-900">{it.material}</p>
+                              <p className="font-mono text-[11px] text-neutral-500">
+                                {it.codigo} · {fmtUSD(precioDia)}/día · Activas en obra:{' '}
+                                <b>{cantActiva} und.</b>
+                                {yaDevuelto && (
+                                  <span className="ml-2 font-bold text-emerald-700">
+                                    [Lote ya procesado: {it.extraviado ? 'Extravío' : 'Devuelto'}]
+                                  </span>
+                                )}
+                              </p>
+                            </div>
 
-                          {!yaDevuelto && (
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-bold text-neutral-600">
-                                Devolver:
-                              </span>
-                              <input
-                                type="text"
-                                inputMode="numeric"
-                                placeholder="0"
-                                value={devolucionCantidades[idKey] || ''}
-                                onChange={(e) => {
-                                  const val = limpiarInputEntero(e.target.value)
-                                  setDevolucionCantidades((prev) => ({
-                                    ...prev,
-                                    [idKey]: val,
-                                  }))
-                                }}
-                                className="w-16 rounded border border-neutral-300 px-2 py-1.5 text-center font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
-                              />
+                            {!yaDevuelto && (
                               <button
                                 type="button"
                                 onClick={() => {
+                                  const falt = Number(devolucionFaltantes[idKey] || 0)
                                   setDevolucionCantidades((prev) => ({
                                     ...prev,
-                                    [idKey]: String(cantActiva),
+                                    [idKey]: String(Math.max(0, cantActiva - falt)),
                                   }))
                                 }}
-                                className="rounded bg-neutral-100 px-2 py-1 text-[10px] font-bold text-neutral-600 hover:bg-neutral-200"
-                                title="Devolver todo este ítem"
+                                className="rounded bg-neutral-100 px-2.5 py-1 text-[10px] font-bold text-neutral-700 hover:bg-neutral-200"
+                                title="Devolver todas las piezas disponibles de este ítem"
                               >
-                                Todo
+                                Todo ({cantActiva})
                               </button>
+                            )}
+                          </div>
+
+                          {!yaDevuelto && (
+                            <div className="grid gap-2.5 rounded border border-neutral-200 bg-neutral-50 p-2.5 sm:grid-cols-3">
+                              <div>
+                                <label className="mb-1 block text-[10px] font-bold uppercase text-emerald-800">
+                                  Piezas Devueltas (Sanas)
+                                </label>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  placeholder="0"
+                                  value={devolucionCantidades[idKey] || ''}
+                                  onChange={(e) => {
+                                    const val = limpiarInputEntero(e.target.value)
+                                    setDevolucionCantidades((prev) => ({
+                                      ...prev,
+                                      [idKey]: val,
+                                    }))
+                                  }}
+                                  className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-center font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="mb-1 block text-[10px] font-bold uppercase text-red-700">
+                                  Piezas Faltantes / Extraviadas / Dañadas
+                                </label>
+                                <input
+                                  type="text"
+                                  inputMode="numeric"
+                                  placeholder="0"
+                                  value={devolucionFaltantes[idKey] || ''}
+                                  onChange={(e) => {
+                                    const val = limpiarInputEntero(e.target.value)
+                                    const faltNum = Number(val || 0)
+                                    setDevolucionFaltantes((prev) => ({
+                                      ...prev,
+                                      [idKey]: val,
+                                    }))
+                                    const devActual = Number(devolucionCantidades[idKey] || 0)
+                                    if (devActual + faltNum > cantActiva) {
+                                      setDevolucionCantidades((prev) => ({
+                                        ...prev,
+                                        [idKey]: String(Math.max(0, cantActiva - faltNum)),
+                                      }))
+                                    }
+                                  }}
+                                  className="w-full rounded border border-red-300 bg-white px-2.5 py-1.5 text-center font-mono text-xs font-bold text-red-700 outline-none focus:border-red-600"
+                                />
+                              </div>
+
+                              <div>
+                                <label className="mb-1 block text-[10px] font-bold uppercase text-neutral-600">
+                                  Precio Reposición Unit. (USD)
+                                </label>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  placeholder="Ej. 45.00"
+                                  value={devolucionPreciosRep[idKey] || ''}
+                                  onChange={(e) => {
+                                    const val = limpiarInputDecimal(e.target.value)
+                                    setDevolucionPreciosRep((prev) => ({
+                                      ...prev,
+                                      [idKey]: val,
+                                    }))
+                                  }}
+                                  className="w-full rounded border border-neutral-300 bg-white px-2.5 py-1.5 text-right font-mono text-xs font-bold outline-none focus:border-[#FF5500]"
+                                  title="Cargo unitario de indemnización por pieza extraviada o no devuelta"
+                                />
+                              </div>
+
+                              {cantFaltanteNum > 0 && (
+                                <div className="sm:col-span-3 flex items-center justify-between rounded border border-red-200 bg-red-50 px-2.5 py-1.5 font-mono text-[11px] font-bold text-red-800">
+                                  <span>
+                                    EXTRAVÍO ({cantFaltanteNum} pza × {fmtUSD(precioRepNum)}): Se descuenta del stock general y se carga al cliente
+                                  </span>
+                                  <span>+{fmtUSD(cargoExtravio)}</span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -2767,15 +3046,14 @@ export default function AlquileresModule({
                 </div>
 
                 <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
-                  <p className="font-bold">Ajuste financiero automático:</p>
+                  <p className="font-bold">Ajuste financiero y de inventario automático:</p>
                   <p className="mt-0.5 text-[11px]">
-                    Al confirmar, el sistema suma de inmediato estas unidades al stock disponible en
-                    galpón y ajusta el cobro diario solo a los{' '}
+                    Las piezas devueltas reingresan al galpón ajustando su cobro a los{' '}
                     {diasEntreFechas(
                       modalDevolucionParcial.fecha_inicio,
                       fechaDevolucionParcial,
                     )}{' '}
-                    días de uso efectivo. Los equipos no devueltos continúan alquilados en obra.
+                    días reales de uso. Si se reportan piezas faltantes/extraviadas, se descuentan del stock general disponible, se registran en Kardex como <b>EXTRAVÍO / NO DEVUELTO EN OBRA</b> y su cargo de reposición se suma al saldo pendiente del contrato y del cliente.
                   </p>
                 </div>
 
@@ -2794,7 +3072,7 @@ export default function AlquileresModule({
                     style={{ background: NARANJA }}
                   >
                     {procesando && <Loader2 size={14} className="animate-spin" />}
-                    <span>Confirmar Entrada Parcial a Galpón</span>
+                    <span>Confirmar Recepción en Galpón</span>
                   </button>
                 </div>
               </form>

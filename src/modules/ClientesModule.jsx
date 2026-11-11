@@ -16,12 +16,15 @@ import {
 } from 'lucide-react'
 import { supabase } from '../supabaseClient'
 import {
+  construirMensajeWhatsAppCliente,
   fmtUSD,
   fmtVES,
+  formatearTelefonoWhatsApp,
   limpiarInputDecimal,
   NARANJA,
   NEGRO,
   num,
+  WhatsAppIcon,
 } from '../utils/formatters'
 import { descargarPlantillaClientesExcel } from '../utils/exportadores'
 import GuiaRapida from '../components/GuiaRapida'
@@ -85,6 +88,31 @@ export default function ClientesModule({
     })
     setErrorModal(null)
     setModalAbierto(true)
+  }
+
+  const enviarWhatsAppCliente = (c) => {
+    let tel = c?.telefono || ''
+    let telFormateado = formatearTelefonoWhatsApp(tel)
+
+    if (!telFormateado) {
+      const pedido = window.prompt(
+        `El cliente "${c.nombre_razon_social}" no tiene un teléfono guardado. Ingresa el número de WhatsApp (ej. 04141234567):`,
+      )
+      if (!pedido) return
+      telFormateado = formatearTelefonoWhatsApp(pedido)
+      if (!telFormateado) {
+        window.alert('Número de teléfono inválido.')
+        return
+      }
+    }
+
+    const textoCodificado = construirMensajeWhatsAppCliente({
+      cliente: c,
+      tasa,
+    })
+
+    const url = `https://wa.me/${telFormateado}?text=${textoCodificado}`
+    window.open(url, '_blank')
   }
 
   const guardarCliente = async (e) => {
@@ -460,6 +488,15 @@ export default function ClientesModule({
                       </td>
                       <td className={`${td} text-center`}>
                         <div className="flex items-center justify-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => enviarWhatsAppCliente(c)}
+                            className="flex items-center gap-1 rounded border border-emerald-500 bg-emerald-50 px-2 py-1 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100"
+                            title="Enviar estado de cuenta por WhatsApp con 1 clic"
+                          >
+                            <WhatsAppIcon size={12} className="text-emerald-600" />
+                            <span>WhatsApp</span>
+                          </button>
                           <button
                             onClick={() => abrirEditar(c)}
                             className="rounded border border-neutral-300 bg-neutral-100 p-1.5 text-neutral-800 hover:border-[#FF5500]"
